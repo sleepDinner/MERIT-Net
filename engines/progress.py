@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import sys
 import time
 
 
@@ -45,3 +46,23 @@ def progress_message(
         f"{progress_bar(step, total_steps)} {step}/{total_steps} {pct:5.1f}% "
         f"elapsed={format_seconds(elapsed)} eta={format_seconds(eta)}{metric_text}"
     )
+
+
+class ProgressLine:
+    """In-place stdout progress line for tail-friendly long training runs."""
+
+    def __init__(self):
+        self._last_len = 0
+
+    def update(self, message: str) -> None:
+        padding = " " * max(0, self._last_len - len(message))
+        sys.stdout.write("\r" + message + padding)
+        sys.stdout.flush()
+        self._last_len = len(message)
+
+    def finish(self, message: str | None = None) -> None:
+        if message is not None:
+            self.update(message)
+        sys.stdout.write("\n")
+        sys.stdout.flush()
+        self._last_len = 0

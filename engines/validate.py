@@ -7,7 +7,7 @@ import torch
 import torch.distributed as dist
 
 from eval.metrics import MetricAccumulator
-from engines.progress import progress_message
+from engines.progress import ProgressLine, progress_message
 from engines.train_one_epoch import _autocast_context, _to_device
 
 
@@ -33,6 +33,7 @@ def validate(
 
     start_time = time.perf_counter()
     total_steps = len(data_loader)
+    progress = ProgressLine() if logger is not None else None
 
     for step, batch in enumerate(data_loader, start=1):
         batch = _to_device(batch, device)
@@ -48,8 +49,8 @@ def validate(
             image_logits=outputs.get("image_logits"),
         )
         count += 1
-        if logger is not None and (step == 1 or step % max(1, log_interval) == 0 or step == total_steps):
-            logger.info(
+        if progress is not None and (step == 1 or step % max(1, log_interval) == 0 or step == total_steps):
+            progress.update(
                 progress_message(
                     prefix,
                     epoch,
@@ -61,6 +62,8 @@ def validate(
                 )
             )
 
+    if progress is not None:
+        progress.finish()
     if dist.is_available() and dist.is_initialized():
         gathered = [None for _ in range(dist.get_world_size())]
         dist.all_gather_object(gathered, accumulator.state_dict())

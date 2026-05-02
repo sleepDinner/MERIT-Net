@@ -63,7 +63,9 @@ tail -f /home/hl/train_merit_net_s_512_stdout.log
 tail -f outputs/merit_net_s_512/logs/train.log
 ```
 
-Training logs include `Epoch current/total`, an ASCII progress bar, elapsed time, ETA, loss, and validation `pixel_f1`, `pixel_auc`, `image_auc`, IoU and FPR.
+Training progress is updated in place on one stdout line per phase, with `Epoch current/total`, an ASCII progress bar, elapsed time, ETA, and loss. Epoch summaries include validation `pixel_f1`, `pixel_auc`, `image_auc`, IoU and FPR.
+
+The default 512 config uses `batch_size_per_gpu: 16` and `accumulate_grad_batches: 1`, so two-GPU training has global batch size `16 x 2 x 1 = 32`.
 
 Resume from latest checkpoint:
 

@@ -5,7 +5,7 @@ from typing import Dict
 
 import torch
 
-from engines.progress import progress_message
+from engines.progress import ProgressLine, progress_message
 
 
 def _to_device(batch: Dict, device: torch.device) -> Dict:
@@ -45,6 +45,7 @@ def train_one_epoch(
     optimizer.zero_grad(set_to_none=True)
     accumulate_grad_batches = max(1, int(accumulate_grad_batches))
     total_steps = len(data_loader)
+    progress = ProgressLine() if logger is not None else None
 
     for step, batch in enumerate(data_loader, start=1):
         batch = _to_device(batch, device)
@@ -68,8 +69,8 @@ def train_one_epoch(
             for k, v in raw_model.gate_statistics().items():
                 logs[k] += float(v)
         count += 1
-        if logger is not None and (step == 1 or step % max(1, log_interval) == 0 or step == total_steps):
-            logger.info(
+        if progress is not None and (step == 1 or step % max(1, log_interval) == 0 or step == total_steps):
+            progress.update(
                 progress_message(
                     "train",
                     epoch,
@@ -85,4 +86,6 @@ def train_one_epoch(
                 )
             )
 
+    if progress is not None:
+        progress.finish()
     return {k: v / max(1, count) for k, v in logs.items()}
