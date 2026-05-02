@@ -8,7 +8,7 @@ import torch.distributed as dist
 
 from eval.metrics import MetricAccumulator
 from engines.progress import progress_message
-from engines.train_one_epoch import _to_device
+from engines.train_one_epoch import _autocast_context, _to_device
 
 
 @torch.no_grad()
@@ -36,7 +36,7 @@ def validate(
 
     for step, batch in enumerate(data_loader, start=1):
         batch = _to_device(batch, device)
-        with torch.cuda.amp.autocast(enabled=amp and device.type == "cuda"):
+        with _autocast_context(device, amp):
             outputs = model(batch["image"], valid_region=batch["valid_region"])
             loss, logs = criterion(outputs, batch, epoch=epoch)
         for k, v in logs.items():

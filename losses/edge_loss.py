@@ -18,9 +18,9 @@ class EdgeLoss(nn.Module):
         self.kernel_size = kernel_size
 
     def forward(self, logits: torch.Tensor, target: torch.Tensor, valid_region: torch.Tensor | None = None) -> torch.Tensor:
-        prob_edge = mask_to_edge(torch.sigmoid(logits), self.kernel_size)
+        prob_edge = mask_to_edge(torch.sigmoid(logits.float()), self.kernel_size)
         target_edge = mask_to_edge(target.float(), self.kernel_size)
-        loss = F.binary_cross_entropy(prob_edge.clamp(1e-4, 1 - 1e-4), target_edge, reduction="none")
+        loss = torch.abs(prob_edge - target_edge)
         if valid_region is None:
             return loss.mean()
         valid_region = valid_region.float()

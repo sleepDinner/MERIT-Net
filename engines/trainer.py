@@ -20,7 +20,7 @@ from engines.logger import CSVMetricLogger, setup_logger
 from engines.optim_scheduler import build_optimizer, build_scheduler
 from engines.progress import format_seconds
 from engines.train_one_epoch import train_one_epoch
-from engines.trainer_ddp import init_distributed, is_rank0
+from engines.trainer_ddp import distributed_barrier, init_distributed, is_rank0
 from engines.validate import validate
 from losses.loss_builder import MERITLoss
 from models.merit_net import MERITNet
@@ -142,9 +142,9 @@ def train(config: Dict, resume: str | None = None, debug: bool = False) -> None:
     val_split = scan_output_dir / "splits" / "val.txt"
     if is_rank0() and (not train_split.exists() or not val_split.exists()):
         logger.info("Split files not found; scanning dataset and creating train/val splits.")
-        scan_and_split_from_config(config)
+        scan_and_split_from_config(config, log_fn=logger.info)
     if distributed:
-        dist.barrier()
+        distributed_barrier(local_rank)
 
     device = torch.device(f"cuda:{local_rank}" if torch.cuda.is_available() else "cpu")
     train_dataset = TamperDataset(
@@ -201,7 +201,13 @@ def train(config: Dict, resume: str | None = None, debug: bool = False) -> None:
     optimizer = build_optimizer(model, config.get("train", {}))
     scheduler = build_scheduler(optimizer, config.get("train", {}))
     amp = bool(config.get("train", {}).get("amp", True)) and device.type == "cuda"
-    scaler = torch.cuda.amp.GradScaler(enabled=amp)
+    if hasattr(torch, "amp") and hasattr(torch.amp, "GradScaler"):
+        try:
+            scaler = torch.amp.GradScaler("cuda", enabled=amp)
+        except TypeError:
+            scaler = torch.amp.GradScaler(enabled=amp)
+    else:
+        scaler = torch.cuda.amp.GradScaler(enabled=amp)
 
     ckpt_cfg = config.get("checkpoint", {})
     ckpt_dir = output_dir / "checkpoints"
@@ -326,7 +332,7 @@ def train(config: Dict, resume: str | None = None, debug: bool = False) -> None:
             )
 
         if distributed:
-            dist.barrier()
+            distributed_barrier(local_rank)
         if no_improve >= patience:
             if is_rank0():
                 logger.info(f"Early stopping triggered after {patience} epochs without improvement.")

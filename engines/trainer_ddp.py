@@ -24,9 +24,21 @@ def init_distributed(config: dict) -> Tuple[bool, int, int, int]:
 
 def cleanup_distributed() -> None:
     if dist.is_available() and dist.is_initialized():
-        dist.barrier()
+        distributed_barrier()
         dist.destroy_process_group()
 
 
 def is_rank0() -> bool:
     return not dist.is_available() or not dist.is_initialized() or dist.get_rank() == 0
+
+
+def distributed_barrier(local_rank: int | None = None) -> None:
+    if not (dist.is_available() and dist.is_initialized()):
+        return
+    backend = dist.get_backend()
+    if backend == "nccl" and torch.cuda.is_available():
+        if local_rank is None:
+            local_rank = int(os.environ.get("LOCAL_RANK", "0"))
+        dist.barrier(device_ids=[local_rank])
+    else:
+        dist.barrier()

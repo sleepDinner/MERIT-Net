@@ -15,6 +15,13 @@ def _to_device(batch: Dict, device: torch.device) -> Dict:
     return out
 
 
+def _autocast_context(device: torch.device, enabled: bool):
+    enabled = bool(enabled and device.type == "cuda")
+    if hasattr(torch, "amp") and hasattr(torch.amp, "autocast"):
+        return torch.amp.autocast("cuda", enabled=enabled)
+    return torch.cuda.amp.autocast(enabled=enabled)
+
+
 def train_one_epoch(
     model: torch.nn.Module,
     data_loader,
@@ -41,7 +48,7 @@ def train_one_epoch(
 
     for step, batch in enumerate(data_loader, start=1):
         batch = _to_device(batch, device)
-        with torch.cuda.amp.autocast(enabled=amp and device.type == "cuda"):
+        with _autocast_context(device, amp):
             outputs = model(batch["image"], valid_region=batch["valid_region"])
             loss, loss_logs = criterion(outputs, batch, epoch=epoch)
             loss_to_backward = loss / accumulate_grad_batches

@@ -5,9 +5,10 @@ import hashlib
 import json
 import random
 import re
+import time
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Dict, Iterable, List, Optional, Tuple
+from typing import Callable, Dict, Iterable, List, Optional, Tuple
 
 import numpy as np
 from PIL import Image
@@ -231,6 +232,8 @@ def scan_dataset(
     skipped_csv_name: str = "skipped_samples.csv",
     valid_csv_name: str = "valid_samples.csv",
     auto_black_for_authentic: bool = True,
+    log_fn: Optional[Callable[[str], None]] = None,
+    progress_interval: int = 500,
 ) -> Tuple[List[SampleRecord], List[SkippedRecord]]:
     root = Path(root)
     output_dir = ensure_dir(output_dir)
@@ -243,13 +246,19 @@ def scan_dataset(
         _write_csv(output_dir / valid_csv_name, [], ["image_path", "mask_path", "label", "family_label", "auto_mask"])
         return valid, skipped
 
+    scan_start = time.perf_counter()
+    if log_fn:
+        log_fn(f"Scanning dataset root: {root}")
     all_files = [p for p in root.rglob("*") if p.is_file() and p.suffix.lower() in IMAGE_EXTS]
     mask_paths = [p for p in all_files if is_mask_candidate(p)]
     image_paths = [p for p in all_files if not is_mask_candidate(p)]
+    if log_fn:
+        log_fn(f"Found {len(image_paths)} image candidates and {len(mask_paths)} mask candidates.")
     masks_by_key = _mask_lookup(mask_paths)
     family_meta = load_family_metadata(root)
 
-    for image_path in sorted(image_paths):
+    total_images = len(image_paths)
+    for idx, image_path in enumerate(sorted(image_paths), start=1):
         mask_path: Optional[Path] = None
         auto_mask = 0
         try:
@@ -295,18 +304,33 @@ def scan_dataset(
             )
         except Exception as exc:
             skipped.append(SkippedRecord(str(image_path), str(mask_path or ""), f"open_or_parse_failed:{exc}"))
+        if log_fn and (idx == 1 or idx % max(1, progress_interval) == 0 or idx == total_images):
+            elapsed = time.perf_counter() - scan_start
+            log_fn(
+                f"scan progress: {idx}/{total_images} "
+                f"valid={len(valid)} skipped={len(skipped)} elapsed={elapsed:.1f}s"
+            )
 
     known_family = sum(1 for s in valid if s.family_label >= 0)
     if valid and known_family / max(1, len(valid)) < 0.5:
         for s in valid:
             s.family_label = -1
-        print("No reliable manipulation family labels found. Family head is disabled.")
+        message = "No reliable manipulation family labels found. Family head is disabled."
+        log_fn(message) if log_fn else print(message)
 
     _write_csv(output_dir / skipped_csv_name, [asdict(x) for x in skipped], ["image_path", "mask_path", "reason"])
     _write_csv(output_dir / valid_csv_name, [asdict(x) for x in valid], ["image_path", "mask_path", "label", "family_label", "auto_mask"])
     auto_count = sum(s.auto_mask for s in valid)
     if auto_count:
-        print(f"Generated {auto_count} black masks for clearly authentic images under {output_dir / 'auto_masks'}.")
+        message = f"Generated {auto_count} black masks for clearly authentic images under {output_dir / 'auto_masks'}."
+        log_fn(message) if log_fn else print(message)
+    if log_fn:
+        pos = sum(1 for s in valid if s.label == 1)
+        neg = sum(1 for s in valid if s.label == 0)
+        log_fn(
+            f"Scan finished: valid={len(valid)} positive={pos} negative={neg} "
+            f"skipped={len(skipped)} output_dir={output_dir}"
+        )
     return valid, skipped
 
 
@@ -369,17 +393,24 @@ def split_train_val(
     return train_file, val_file
 
 
-def scan_and_split_from_config(config: dict) -> Tuple[Path, Path]:
+def scan_and_split_from_config(config: dict, log_fn: Optional[Callable[[str], None]] = None) -> Tuple[Path, Path]:
     data_cfg = config.get("data", {})
     output_dir = data_cfg.get("scan_output_dir", "outputs")
     samples, _ = scan_dataset(
         root=data_cfg.get("train_root", "/data0/lzb-change-vmunet/FinalTrainData/"),
         output_dir=output_dir,
+        log_fn=log_fn,
+        progress_interval=int(data_cfg.get("scan_progress_interval", 500)),
     )
-    return split_train_val(
+    train_file, val_file = split_train_val(
         samples,
         output_dir=output_dir,
         split_ratio=float(data_cfg.get("split_ratio", 0.9)),
         seed=int(config.get("seed", 42)),
         balance_pos_neg=bool(data_cfg.get("balance_pos_neg", True)),
     )
+    if log_fn:
+        train_count = sum(1 for _ in train_file.open("r", encoding="utf-8", errors="ignore"))
+        val_count = sum(1 for _ in val_file.open("r", encoding="utf-8", errors="ignore"))
+        log_fn(f"Split finished: train={train_count} val={val_count} train_file={train_file} val_file={val_file}")
+    return train_file, val_file
