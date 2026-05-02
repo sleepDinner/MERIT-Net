@@ -1,0 +1,6 @@
+outputs/
+*.pth
+*.pt
+*.ckpt
+runs/
+logs/

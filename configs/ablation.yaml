@@ -1,0 +1,110 @@
+seed: 42
+output_dir: outputs/merit_net_ablation
+
+data:
+  train_root: /data0/lzb-change-vmunet/FinalTrainData/
+  scan_output_dir: outputs
+  img_size: 512
+  split_ratio: 0.9
+  balance_pos_neg: true
+  num_workers: 8
+  pin_memory: true
+  skip_invalid: true
+
+model:
+  name: MERITNet
+  img_size: 512
+  global_backbone: pvt_v2_b1
+  global_pretrained: true
+  local_backbone: light_resnet18
+  srm_trainable: true
+  decoder_embed_dim: 256
+  use_residual_branch: true
+  use_transformer_branch: true
+  use_gated_fusion: true
+  use_refinement: true
+  use_confidence_head: true
+  use_image_head: true
+  use_family_head: false
+  use_edge_loss: true
+  num_families: 5
+  gradient_checkpointing: false
+
+train:
+  epochs: 80
+  batch_size_per_gpu: 4
+  accumulate_grad_batches: 2
+  log_interval: 20
+  amp: true
+  optimizer: AdamW
+  lr: 0.00006
+  min_lr: 0.000001
+  weight_decay: 0.0001
+  warmup_epochs: 3
+  scheduler: cosine
+  early_stopping:
+    monitor: val_pixel_f1
+    mode: max
+    patience: 10
+
+checkpoint:
+  save_every_epoch: true
+  save_best_pth: false
+  best_info_txt: best_checkpoint.txt
+  latest_info_txt: latest_checkpoint.txt
+  filename_template: epoch{epoch}.pth
+
+loss:
+  final_seg: 1.0
+  coarse_seg: 0.4
+  edge: 0.2
+  confidence: 0.3
+  confidence_warmup_epochs: 5
+  image: 0.5
+  family: 0.0
+
+augmentation:
+  hflip_prob: 0.5
+  vflip_prob: 0.2
+  rotate_prob: 0.3
+  jpeg_prob: 0.3
+  jpeg_quality: [40, 95]
+  noise_prob: 0.2
+  noise_sigma: [0, 10]
+  copy_move_prob: 0.2
+  inpainting_prob: 0.2
+
+augmentation_schedule:
+  enabled: false
+  mode: progressive
+  warmup_epochs: 10
+  max_strength_epoch: 50
+  start:
+    jpeg_prob: 0.1
+    jpeg_quality_min: 80
+    noise_prob: 0.05
+    noise_sigma_max: 3
+    copy_move_prob: 0.05
+    inpainting_prob: 0.05
+  end:
+    jpeg_prob: 0.4
+    jpeg_quality_min: 40
+    noise_prob: 0.25
+    noise_sigma_max: 10
+    copy_move_prob: 0.25
+    inpainting_prob: 0.25
+
+eval:
+  threshold: 0.5
+  save_predictions: true
+  metrics:
+    - pixel_f1
+    - iou
+    - pixel_auc
+    - image_auc
+    - balanced_accuracy
+    - fpr
+
+ddp:
+  backend: nccl
+  find_unused_parameters: false
