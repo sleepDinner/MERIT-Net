@@ -32,13 +32,26 @@ class CSVMetricLogger:
     def append(self, row: Dict[str, float | int | str]) -> None:
         exists = self.path.exists()
         fieldnames = list(row.keys())
+        existing_rows = []
+        old_fieldnames = []
         if exists:
-            with self.path.open("r", encoding="utf-8", newline="") as f:
-                reader = csv.reader(f)
-                try:
-                    fieldnames = next(reader)
-                except StopIteration:
+            with self.path.open("r", encoding="utf-8", errors="ignore", newline="") as f:
+                reader = csv.DictReader(f)
+                if reader.fieldnames:
+                    old_fieldnames = list(reader.fieldnames)
+                    fieldnames = list(old_fieldnames)
+                    for key in row:
+                        if key not in fieldnames:
+                            fieldnames.append(key)
+                    existing_rows = list(reader)
+                else:
                     exists = False
+            if exists and fieldnames != old_fieldnames:
+                with self.path.open("w", encoding="utf-8", newline="") as f:
+                    writer = csv.DictWriter(f, fieldnames=fieldnames)
+                    writer.writeheader()
+                    for old_row in existing_rows:
+                        writer.writerow({k: old_row.get(k, "") for k in fieldnames})
         with self.path.open("a", encoding="utf-8", newline="") as f:
             writer = csv.DictWriter(f, fieldnames=fieldnames)
             if not exists:

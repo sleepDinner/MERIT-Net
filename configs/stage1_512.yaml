@@ -7,8 +7,11 @@ data:
   img_size: 512
   split_ratio: 0.9
   balance_pos_neg: true
-  num_workers: 8
+  num_workers: 16
+  eval_num_workers: 8
   pin_memory: true
+  persistent_workers: true
+  prefetch_factor: 4
   skip_invalid: true
   train_crop_mode: random_crop
   crop_size: 512
@@ -39,6 +42,9 @@ train:
   batch_size_per_gpu: 32
   accumulate_grad_batches: 1
   compute_train_metrics: true
+  train_metrics_mode: epoch_end_sample
+  train_eval_batch_size_per_gpu: 64
+  train_eval_max_batches: 300
   log_interval: 20
   amp: true
   optimizer: AdamW
@@ -114,6 +120,7 @@ augmentation_schedule:
 
 eval:
   threshold: 0.5
+  batch_size_per_gpu: 64
   save_predictions: true
 
 ddp:

@@ -85,7 +85,7 @@ Training progress is updated in place on one stdout line per phase, with `Epoch 
 
 The default 512 config uses `batch_size_per_gpu: 32` and `accumulate_grad_batches: 1`, so two-GPU training has global batch size `32 x 2 x 1 = 64`.
 
-Training curves are saved after each epoch under each stage's output directory:
+Training curves are saved after each epoch under each stage's output directory. By default the train loss/F1/AUC curves are computed from a no-grad epoch-end sample of the train split (`train_metrics_mode: epoch_end_sample`, `train_eval_max_batches: 300` for 512 configs), while validation metrics are still computed on the full validation split.
 
 ```text
 outputs/<experiment_name>/curves/train_loss.png

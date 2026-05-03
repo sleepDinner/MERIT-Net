@@ -11,7 +11,7 @@ import numpy as np
 import torch
 import torch.distributed as dist
 from torch.nn.parallel import DistributedDataParallel
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader, Sampler
 from torch.utils.data.distributed import DistributedSampler
 
 from datasets.dataset_scanner import scan_and_split_from_config
@@ -25,6 +25,27 @@ from engines.trainer_ddp import distributed_barrier, init_distributed, is_rank0
 from engines.validate import validate
 from losses.loss_builder import MERITLoss
 from models.merit_net import MERITNet
+
+
+class DistributedEvalSampler(Sampler[int]):
+    """Partition eval indices across ranks without padding or duplicated samples."""
+
+    def __init__(self, dataset, num_replicas: int | None = None, rank: int | None = None):
+        if num_replicas is None:
+            num_replicas = dist.get_world_size() if dist.is_available() and dist.is_initialized() else 1
+        if rank is None:
+            rank = dist.get_rank() if dist.is_available() and dist.is_initialized() else 0
+        self.dataset = dataset
+        self.num_replicas = int(num_replicas)
+        self.rank = int(rank)
+
+    def __iter__(self):
+        return iter(range(self.rank, len(self.dataset), self.num_replicas))
+
+    def __len__(self) -> int:
+        if self.rank >= len(self.dataset):
+            return 0
+        return (len(self.dataset) - 1 - self.rank) // self.num_replicas + 1
 
 
 def set_seed(seed: int) -> None:
@@ -171,6 +192,7 @@ def train(config: Dict, resume: str | None = None, pretrained: str | None = None
         distributed_barrier(local_rank)
 
     device = torch.device(f"cuda:{local_rank}" if torch.cuda.is_available() else "cpu")
+    train_cfg = config.get("train", {})
     train_dataset = TamperDataset(
         train_split,
         img_size=int(data_cfg.get("img_size", 512)),
@@ -180,6 +202,20 @@ def train(config: Dict, resume: str | None = None, pretrained: str | None = None
         seed=int(config.get("seed", 42)),
         debug=debug,
         crop_config=data_cfg,
+    )
+    train_metrics_mode = str(train_cfg.get("train_metrics_mode", "epoch_end_sample"))
+    compute_epoch_train_metrics = bool(train_cfg.get("compute_train_metrics", True)) and train_metrics_mode in {"epoch_end", "epoch_end_sample"}
+    train_eval_max_batches = int(train_cfg.get("train_eval_max_batches", 300)) if train_metrics_mode == "epoch_end_sample" else None
+    train_eval_dataset = (
+        TamperDataset(
+            train_split,
+            img_size=int(data_cfg.get("img_size", 512)),
+            is_train=False,
+            seed=int(config.get("seed", 42)),
+            debug=debug,
+        )
+        if compute_epoch_train_metrics
+        else None
     )
     val_dataset = TamperDataset(
         val_split,
@@ -193,23 +229,52 @@ def train(config: Dict, resume: str | None = None, pretrained: str | None = None
     _disable_family_if_unreliable(config, scan_output_dir, logger)
 
     train_sampler = DistributedSampler(train_dataset, shuffle=True) if distributed else None
-    val_sampler = DistributedSampler(val_dataset, shuffle=False) if distributed else None
+    train_eval_sampler = DistributedEvalSampler(train_eval_dataset) if distributed and train_eval_dataset is not None else None
+    val_sampler = DistributedEvalSampler(val_dataset) if distributed else None
+    train_batch_size = int(train_cfg.get("batch_size_per_gpu", 4))
+    train_eval_batch_size = int(train_cfg.get("train_eval_batch_size_per_gpu", train_batch_size))
+    val_batch_size = int(config.get("eval", {}).get("batch_size_per_gpu", train_eval_batch_size))
+    train_num_workers = int(data_cfg.get("num_workers", 8))
+    eval_num_workers = int(data_cfg.get("eval_num_workers", min(train_num_workers, 8)))
+    train_persistent_workers = bool(data_cfg.get("persistent_workers", False)) and train_num_workers > 0
+    eval_persistent_workers = bool(data_cfg.get("eval_persistent_workers", False)) and eval_num_workers > 0
+    train_prefetch_factor = int(data_cfg.get("prefetch_factor", 2)) if train_num_workers > 0 else None
+    eval_prefetch_factor = int(data_cfg.get("eval_prefetch_factor", data_cfg.get("prefetch_factor", 2))) if eval_num_workers > 0 else None
     train_loader = DataLoader(
         train_dataset,
-        batch_size=int(config.get("train", {}).get("batch_size_per_gpu", 4)),
+        batch_size=train_batch_size,
         shuffle=train_sampler is None,
         sampler=train_sampler,
-        num_workers=int(data_cfg.get("num_workers", 8)),
+        num_workers=train_num_workers,
         pin_memory=bool(data_cfg.get("pin_memory", True)),
+        persistent_workers=train_persistent_workers,
+        prefetch_factor=train_prefetch_factor,
         drop_last=False,
+    )
+    train_eval_loader = (
+        DataLoader(
+            train_eval_dataset,
+            batch_size=train_eval_batch_size,
+            shuffle=False,
+            sampler=train_eval_sampler,
+            num_workers=eval_num_workers,
+            pin_memory=bool(data_cfg.get("pin_memory", True)),
+            persistent_workers=eval_persistent_workers,
+            prefetch_factor=eval_prefetch_factor,
+            drop_last=False,
+        )
+        if train_eval_dataset is not None
+        else None
     )
     val_loader = DataLoader(
         val_dataset,
-        batch_size=int(config.get("train", {}).get("batch_size_per_gpu", 4)),
+        batch_size=val_batch_size,
         shuffle=False,
         sampler=val_sampler,
-        num_workers=int(data_cfg.get("num_workers", 8)),
+        num_workers=eval_num_workers,
         pin_memory=bool(data_cfg.get("pin_memory", True)),
+        persistent_workers=eval_persistent_workers,
+        prefetch_factor=eval_prefetch_factor,
         drop_last=False,
     )
 
@@ -262,9 +327,9 @@ def train(config: Dict, resume: str | None = None, pretrained: str | None = None
         logger.info(f"Resumed from {resume_path} at epoch {start_epoch}.")
 
     metric_logger = CSVMetricLogger(output_dir / "metrics.csv")
-    epochs = int(config.get("train", {}).get("epochs", 80))
+    epochs = int(train_cfg.get("epochs", 80))
     threshold = float(config.get("eval", {}).get("threshold", 0.5))
-    log_interval = int(config.get("train", {}).get("log_interval", 20))
+    log_interval = int(train_cfg.get("log_interval", 20))
     no_improve = 0
 
     for epoch in range(start_epoch, epochs + 1):
@@ -285,13 +350,28 @@ def train(config: Dict, resume: str | None = None, pretrained: str | None = None
             device,
             epoch=epoch,
             total_epochs=epochs,
-            accumulate_grad_batches=int(config.get("train", {}).get("accumulate_grad_batches", 1)),
+            accumulate_grad_batches=int(train_cfg.get("accumulate_grad_batches", 1)),
             amp=amp,
             logger=logger if is_rank0() else None,
             log_interval=log_interval,
-            threshold=threshold,
-            compute_metrics=bool(config.get("train", {}).get("compute_train_metrics", True)),
         )
+        train_metric_logs = {}
+        if train_eval_loader is not None:
+            train_metric_logs = validate(
+                model,
+                train_eval_loader,
+                criterion,
+                device,
+                epoch=epoch,
+                total_epochs=epochs,
+                amp=amp,
+                threshold=threshold,
+                prefix="train",
+                display_prefix="train_eval",
+                logger=logger if is_rank0() else None,
+                log_interval=log_interval,
+                max_batches=train_eval_max_batches,
+            )
         val_logs = validate(
             model,
             val_loader,
@@ -349,7 +429,8 @@ def train(config: Dict, resume: str | None = None, pretrained: str | None = None
             row = {
                 "epoch": epoch,
                 "lr": optimizer.param_groups[0]["lr"],
-                **{f"train_{k}": v for k, v in train_logs.items()},
+                **{f"train_optim_{k}": v for k, v in train_logs.items()},
+                **(train_metric_logs or {f"train_{k}": v for k, v in train_logs.items()}),
                 **val_logs,
             }
             metric_logger.append(row)
@@ -360,7 +441,9 @@ def train(config: Dict, resume: str | None = None, pretrained: str | None = None
             epoch_time = format_seconds(time.perf_counter() - epoch_start_time)
             logger.info(
                 f"Epoch {epoch}/{epochs} done | time={epoch_time} "
-                f"train_loss={train_logs.get('loss_total', float('nan')):.5f} "
+                f"train_loss={(train_metric_logs or {f'train_{k}': v for k, v in train_logs.items()}).get('train_loss_total', float('nan')):.5f} "
+                f"train_pixel_f1={(train_metric_logs or {}).get('train_pixel_f1', float('nan')):.5f} "
+                f"train_pixel_auc={(train_metric_logs or {}).get('train_pixel_auc', float('nan')):.5f} "
                 f"val_loss={val_logs.get('val_loss_total', float('nan')):.5f} "
                 f"val_pixel_f1={val_logs.get('val_pixel_f1', float('nan')):.5f} "
                 f"val_pixel_auc={val_logs.get('val_pixel_auc', float('nan')):.5f} "
