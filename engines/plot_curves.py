@@ -104,4 +104,8 @@ def plot_training_curves(metrics_csv: str | Path, output_dir: str | Path) -> boo
             values.append(value)
         if values:
             _plot_one(epochs, values, title, ylabel, output_dir / filename)
+        else:
+            stale_path = output_dir / filename
+            if stale_path.exists():
+                stale_path.unlink()
     return True

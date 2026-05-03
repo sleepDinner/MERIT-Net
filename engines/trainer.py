@@ -69,6 +69,37 @@ def _save_info(path: Path, lines: Dict[str, str | int | float]) -> None:
     path.write_text("\n".join(f"{k}: {v}" for k, v in lines.items()) + "\n", encoding="utf-8")
 
 
+def _finite_metric(value: object, default: float = 0.0) -> float:
+    try:
+        metric = float(value)
+    except (TypeError, ValueError):
+        return default
+    if not np.isfinite(metric):
+        return default
+    return metric
+
+
+def _add_best_score(metrics: Dict[str, float], eval_cfg: Dict) -> None:
+    score_cfg = eval_cfg.get("best_score", {})
+    weights = score_cfg.get(
+        "weights",
+        {
+            "val_best_pixel_f1": 0.5,
+            "val_pixel_auc": 0.3,
+            "val_boundary_f1": 0.2,
+        },
+    )
+    total_weight = 0.0
+    score = 0.0
+    for key, weight in weights.items():
+        weight = float(weight)
+        total_weight += abs(weight)
+        score += weight * _finite_metric(metrics.get(key), default=0.0)
+    if total_weight <= 0:
+        score = _finite_metric(metrics.get("val_pixel_f1"), default=0.0)
+    metrics["val_best_score"] = float(score)
+
+
 def save_checkpoint(
     ckpt_dir: Path,
     filename_template: str,
@@ -203,7 +234,7 @@ def train(config: Dict, resume: str | None = None, pretrained: str | None = None
         debug=debug,
         crop_config=data_cfg,
     )
-    train_metrics_mode = str(train_cfg.get("train_metrics_mode", "epoch_end_sample"))
+    train_metrics_mode = str(train_cfg.get("train_metrics_mode", "loss_only"))
     compute_epoch_train_metrics = bool(train_cfg.get("compute_train_metrics", True)) and train_metrics_mode in {"epoch_end", "epoch_end_sample"}
     train_eval_max_batches = int(train_cfg.get("train_eval_max_batches", 300)) if train_metrics_mode == "epoch_end_sample" else None
     train_eval_dataset = (
@@ -330,6 +361,8 @@ def train(config: Dict, resume: str | None = None, pretrained: str | None = None
     epochs = int(train_cfg.get("epochs", 80))
     threshold = float(config.get("eval", {}).get("threshold", 0.5))
     log_interval = int(train_cfg.get("log_interval", 20))
+    train_eval_interval = max(1, int(train_cfg.get("train_eval_interval", 1)))
+    train_eval_first_epoch = bool(train_cfg.get("train_eval_first_epoch", True))
     no_improve = 0
 
     for epoch in range(start_epoch, epochs + 1):
@@ -356,7 +389,10 @@ def train(config: Dict, resume: str | None = None, pretrained: str | None = None
             log_interval=log_interval,
         )
         train_metric_logs = {}
-        if train_eval_loader is not None:
+        run_train_eval = train_eval_loader is not None and (
+            epoch % train_eval_interval == 0 or (train_eval_first_epoch and epoch == start_epoch)
+        )
+        if run_train_eval:
             train_metric_logs = validate(
                 model,
                 train_eval_loader,
@@ -385,9 +421,10 @@ def train(config: Dict, resume: str | None = None, pretrained: str | None = None
             logger=logger if is_rank0() else None,
             log_interval=log_interval,
         )
+        _add_best_score(val_logs, config.get("eval", {}))
         scheduler.step()
 
-        current_metric = float(val_logs.get(monitor, float("nan")))
+        current_metric = _finite_metric(val_logs.get(monitor), default=-float("inf") if mode == "max" else float("inf"))
         improved = (current_metric > best_metric) if mode == "max" else (current_metric < best_metric)
         if improved:
             best_metric = current_metric
@@ -430,23 +467,41 @@ def train(config: Dict, resume: str | None = None, pretrained: str | None = None
                 "epoch": epoch,
                 "lr": optimizer.param_groups[0]["lr"],
                 **{f"train_optim_{k}": v for k, v in train_logs.items()},
-                **(train_metric_logs or {f"train_{k}": v for k, v in train_logs.items()}),
+                "train_loss_total": train_logs.get("loss_total", float("nan")),
+                **train_metric_logs,
                 **val_logs,
             }
             metric_logger.append(row)
             try:
                 plot_training_curves(output_dir / "metrics.csv", output_dir)
+                if train_metrics_mode == "loss_only":
+                    for stale_curve in ("train_f1.png", "train_auc.png"):
+                        stale_path = output_dir / "curves" / stale_curve
+                        if stale_path.exists():
+                            stale_path.unlink()
             except Exception as exc:
                 logger.warning(f"Failed to plot training curves: {exc}")
             epoch_time = format_seconds(time.perf_counter() - epoch_start_time)
+            train_eval_loss = train_metric_logs.get("train_loss_total", float("nan"))
+            train_eval_f1 = train_metric_logs.get("train_pixel_f1", float("nan"))
+            train_eval_auc = train_metric_logs.get("train_pixel_auc", float("nan"))
+            train_eval_text = (
+                f"train_eval_loss={train_eval_loss:.5f} "
+                f"train_eval_pixel_f1={train_eval_f1:.5f} "
+                f"train_eval_pixel_auc={train_eval_auc:.5f} "
+                if train_metric_logs
+                else ""
+            )
             logger.info(
                 f"Epoch {epoch}/{epochs} done | time={epoch_time} "
-                f"train_loss={(train_metric_logs or {f'train_{k}': v for k, v in train_logs.items()}).get('train_loss_total', float('nan')):.5f} "
-                f"train_pixel_f1={(train_metric_logs or {}).get('train_pixel_f1', float('nan')):.5f} "
-                f"train_pixel_auc={(train_metric_logs or {}).get('train_pixel_auc', float('nan')):.5f} "
+                f"train_loss={train_logs.get('loss_total', float('nan')):.5f} "
+                f"{train_eval_text}"
                 f"val_loss={val_logs.get('val_loss_total', float('nan')):.5f} "
                 f"val_pixel_f1={val_logs.get('val_pixel_f1', float('nan')):.5f} "
+                f"val_best_f1={val_logs.get('val_best_pixel_f1', float('nan')):.5f} "
                 f"val_pixel_auc={val_logs.get('val_pixel_auc', float('nan')):.5f} "
+                f"val_boundary_f1={val_logs.get('val_boundary_f1', float('nan')):.5f} "
+                f"val_best_score={val_logs.get('val_best_score', float('nan')):.5f} "
                 f"val_image_auc={val_logs.get('val_image_auc', float('nan')):.5f} "
                 f"best_{monitor}={best_metric:.5f} ckpt={ckpt_path}"
             )

@@ -85,16 +85,16 @@ Training progress is updated in place on one stdout line per phase, with `Epoch 
 
 The default 512 config uses `batch_size_per_gpu: 32` and `accumulate_grad_batches: 1`, so two-GPU training has global batch size `32 x 2 x 1 = 64`.
 
-Training curves are saved after each epoch under each stage's output directory. By default the train loss/F1/AUC curves are computed from a no-grad epoch-end sample of the train split (`train_metrics_mode: epoch_end_sample`, `train_eval_max_batches: 300` for 512 configs), while validation metrics are still computed on the full validation split.
+Training curves are saved after each epoch under each stage's output directory. By default train curves use only the training-loop mean loss (`train_metrics_mode: loss_only`) for speed; train F1/AUC are not computed. Validation loss/F1/AUC are still computed on the full validation split.
 
 ```text
 outputs/<experiment_name>/curves/train_loss.png
 outputs/<experiment_name>/curves/val_loss.png
-outputs/<experiment_name>/curves/train_f1.png
 outputs/<experiment_name>/curves/val_f1.png
-outputs/<experiment_name>/curves/train_auc.png
 outputs/<experiment_name>/curves/val_auc.png
 ```
+
+`train_f1.png` and `train_auc.png` are generated only when train metrics are explicitly enabled.
 
 Resume from latest checkpoint:
 
@@ -135,6 +135,14 @@ cat outputs/merit_net_s_512/checkpoints/best_checkpoint.txt
 ```
 
 Then use the listed `best_checkpoint_path` for testing.
+
+By default the best checkpoint is selected by `val_best_score`:
+
+```text
+0.5 * val_best_pixel_f1 + 0.3 * val_pixel_auc + 0.2 * val_boundary_f1
+```
+
+This is less tied to the fixed 0.5 threshold than `val_pixel_f1` alone.
 
 ## Evaluate All Test Sets
 

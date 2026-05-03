@@ -41,10 +41,12 @@ train:
   epochs: 70
   batch_size_per_gpu: 32
   accumulate_grad_batches: 1
-  compute_train_metrics: true
-  train_metrics_mode: epoch_end_sample
+  compute_train_metrics: false
+  train_metrics_mode: loss_only
   train_eval_batch_size_per_gpu: 64
-  train_eval_max_batches: 300
+  train_eval_max_batches: 50
+  train_eval_interval: 5
+  train_eval_first_epoch: true
   log_interval: 20
   amp: true
   optimizer: AdamW
@@ -54,7 +56,7 @@ train:
   warmup_epochs: 3
   scheduler: cosine
   early_stopping:
-    monitor: val_pixel_f1
+    monitor: val_best_score
     mode: max
     patience: 12
 
@@ -122,6 +124,11 @@ eval:
   threshold: 0.5
   batch_size_per_gpu: 64
   save_predictions: true
+  best_score:
+    weights:
+      val_best_pixel_f1: 0.5
+      val_pixel_auc: 0.3
+      val_boundary_f1: 0.2
 
 ddp:
   backend: nccl
