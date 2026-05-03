@@ -4,7 +4,9 @@ from collections import defaultdict
 from typing import Dict
 
 import torch
+import torch.distributed as dist
 
+from eval.metrics import MetricAccumulator
 from engines.progress import ProgressLine, progress_message
 
 
@@ -35,9 +37,12 @@ def train_one_epoch(
     amp: bool = True,
     logger=None,
     log_interval: int = 20,
+    threshold: float = 0.5,
+    compute_metrics: bool = True,
 ) -> Dict[str, float]:
     model.train()
     logs = defaultdict(float)
+    metric_acc = MetricAccumulator(threshold=threshold) if compute_metrics else None
     count = 0
     import time
 
@@ -68,6 +73,13 @@ def train_one_epoch(
         if hasattr(raw_model, "gate_statistics"):
             for k, v in raw_model.gate_statistics().items():
                 logs[k] += float(v)
+        if metric_acc is not None:
+            metric_acc.update(
+                mask_prob=torch.sigmoid(outputs["final_mask_logits"]).detach(),
+                gt_mask=batch["mask"].detach(),
+                valid_region=batch["valid_region"].detach(),
+                image_logits=outputs.get("image_logits").detach() if torch.is_tensor(outputs.get("image_logits")) else None,
+            )
         count += 1
         if progress is not None and (step == 1 or step % max(1, log_interval) == 0 or step == total_steps):
             progress.update(
@@ -88,4 +100,22 @@ def train_one_epoch(
 
     if progress is not None:
         progress.finish()
-    return {k: v / max(1, count) for k, v in logs.items()}
+    if dist.is_available() and dist.is_initialized():
+        keys = sorted(logs.keys())
+        tensor = torch.tensor([count] + [logs[k] for k in keys], dtype=torch.float64, device=device)
+        dist.all_reduce(tensor, op=dist.ReduceOp.SUM)
+        total_count = int(tensor[0].item())
+        result = {k: float(tensor[i + 1].item()) / max(1, total_count) for i, k in enumerate(keys)}
+        if metric_acc is not None:
+            gathered = [None for _ in range(dist.get_world_size())]
+            dist.all_gather_object(gathered, metric_acc.state_dict())
+            merged = MetricAccumulator(threshold=threshold)
+            for state in gathered:
+                merged.merge(MetricAccumulator.from_state_dict(state))
+            metric_acc = merged
+    else:
+        result = {k: v / max(1, count) for k, v in logs.items()}
+    if metric_acc is not None:
+        metrics = metric_acc.compute()
+        result.update({k: v for k, v in metrics.items() if k in {"pixel_f1", "pixel_auc", "iou", "pixel_precision", "pixel_recall"}})
+    return result

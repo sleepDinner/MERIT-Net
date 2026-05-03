@@ -47,6 +47,7 @@ def main() -> None:
         output_csv=args.output_csv,
         batch_size=args.batch_size,
         num_workers=args.num_workers,
+        progress_name="test",
     )
     print(metrics)
 

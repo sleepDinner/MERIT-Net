@@ -46,6 +46,24 @@ Two-GPU DDP, for example on 2 NVIDIA 4090 cards:
 bash tools/train_ddp.sh configs/default_512.yaml 2
 ```
 
+Staged training in one command. This runs 512 localization pretraining, 512 confidence/image fine-tuning, then 768 high-resolution fine-tuning. Each later stage automatically loads the previous stage's `best_checkpoint.txt` as model-only pretrained weights, without restoring the old optimizer or scheduler:
+
+```bash
+bash tools/train_pipeline_ddp.sh configs/pipeline_512_768.yaml 2
+```
+
+The equivalent Python entrypoint is:
+
+```bash
+torchrun --nproc_per_node=2 -m tools.train_pipeline --pipeline configs/pipeline_512_768.yaml
+```
+
+For manual model-only fine-tuning:
+
+```bash
+python tools/train.py --config configs/stage2_512.yaml --pretrained outputs/merit_net_s_512_stage1/checkpoints/epochXX.pth
+```
+
 Detached two-GPU DDP run with stdout/stderr redirected to a log file:
 
 ```bash
@@ -65,7 +83,18 @@ tail -f outputs/merit_net_s_512/logs/train.log
 
 Training progress is updated in place on one stdout line per phase, with `Epoch current/total`, an ASCII progress bar, elapsed time, ETA, and loss. Epoch summaries include validation `pixel_f1`, `pixel_auc`, `image_auc`, IoU and FPR.
 
-The default 512 config uses `batch_size_per_gpu: 16` and `accumulate_grad_batches: 1`, so two-GPU training has global batch size `16 x 2 x 1 = 32`.
+The default 512 config uses `batch_size_per_gpu: 32` and `accumulate_grad_batches: 1`, so two-GPU training has global batch size `32 x 2 x 1 = 64`.
+
+Training curves are saved after each epoch under each stage's output directory:
+
+```text
+outputs/<experiment_name>/curves/train_loss.png
+outputs/<experiment_name>/curves/val_loss.png
+outputs/<experiment_name>/curves/train_f1.png
+outputs/<experiment_name>/curves/val_f1.png
+outputs/<experiment_name>/curves/train_auc.png
+outputs/<experiment_name>/curves/val_auc.png
+```
 
 Resume from latest checkpoint:
 

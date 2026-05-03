@@ -18,6 +18,7 @@ from datasets.dataset_scanner import scan_and_split_from_config
 from datasets.tamper_dataset import TamperDataset
 from engines.logger import CSVMetricLogger, setup_logger
 from engines.optim_scheduler import build_optimizer, build_scheduler
+from engines.plot_curves import plot_training_curves
 from engines.progress import format_seconds
 from engines.train_one_epoch import train_one_epoch
 from engines.trainer_ddp import distributed_barrier, init_distributed, is_rank0
@@ -100,6 +101,29 @@ def _load_checkpoint(path: Path, model, optimizer, scheduler, scaler, map_locati
     return ckpt
 
 
+def _load_pretrained_model(path: Path, model, map_location, logger=None) -> None:
+    ckpt = torch.load(path, map_location=map_location)
+    state = ckpt.get("model_state_dict", ckpt)
+    raw_model = model.module if hasattr(model, "module") else model
+    current = raw_model.state_dict()
+    matched = {}
+    skipped = []
+    for key, value in state.items():
+        if key in current and current[key].shape == value.shape:
+            matched[key] = value
+        else:
+            skipped.append(key)
+    current.update(matched)
+    raw_model.load_state_dict(current, strict=True)
+    message = f"Loaded pretrained model weights from {path}. matched={len(matched)} skipped={len(skipped)}"
+    if logger is not None:
+        logger.info(message)
+        if skipped:
+            logger.info(f"Skipped pretrained keys due to missing/shape mismatch: {skipped[:20]}")
+    else:
+        print(message)
+
+
 def _disable_family_if_unreliable(config: Dict, scan_output_dir: Path, logger) -> None:
     model_cfg = config.setdefault("model", {})
     if not model_cfg.get("use_family_head", False):
@@ -126,7 +150,7 @@ def _disable_family_if_unreliable(config: Dict, scan_output_dir: Path, logger) -
         logger.info("No reliable manipulation family labels found. Family head is disabled.")
 
 
-def train(config: Dict, resume: str | None = None, debug: bool = False) -> None:
+def train(config: Dict, resume: str | None = None, pretrained: str | None = None, debug: bool = False) -> None:
     distributed, rank, local_rank, _ = init_distributed(config)
     seed = int(config.get("seed", 42)) + rank
     set_seed(seed)
@@ -155,6 +179,7 @@ def train(config: Dict, resume: str | None = None, debug: bool = False) -> None:
         augmentation_schedule=config.get("augmentation_schedule", {}),
         seed=int(config.get("seed", 42)),
         debug=debug,
+        crop_config=data_cfg,
     )
     val_dataset = TamperDataset(
         val_split,
@@ -196,6 +221,12 @@ def train(config: Dict, resume: str | None = None, debug: bool = False) -> None:
             output_device=local_rank if device.type == "cuda" else None,
             find_unused_parameters=bool(config.get("ddp", {}).get("find_unused_parameters", False)),
         )
+
+    if pretrained:
+        pretrained_path = Path(pretrained)
+        if not pretrained_path.exists():
+            raise FileNotFoundError(f"Pretrained checkpoint not found: {pretrained_path}")
+        _load_pretrained_model(pretrained_path, model, map_location=device, logger=logger if is_rank0() else None)
 
     criterion = MERITLoss(config)
     optimizer = build_optimizer(model, config.get("train", {}))
@@ -258,6 +289,8 @@ def train(config: Dict, resume: str | None = None, debug: bool = False) -> None:
             amp=amp,
             logger=logger if is_rank0() else None,
             log_interval=log_interval,
+            threshold=threshold,
+            compute_metrics=bool(config.get("train", {}).get("compute_train_metrics", True)),
         )
         val_logs = validate(
             model,
@@ -320,6 +353,10 @@ def train(config: Dict, resume: str | None = None, debug: bool = False) -> None:
                 **val_logs,
             }
             metric_logger.append(row)
+            try:
+                plot_training_curves(output_dir / "metrics.csv", output_dir)
+            except Exception as exc:
+                logger.warning(f"Failed to plot training curves: {exc}")
             epoch_time = format_seconds(time.perf_counter() - epoch_start_time)
             logger.info(
                 f"Epoch {epoch}/{epochs} done | time={epoch_time} "

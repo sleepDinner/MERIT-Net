@@ -1,0 +1,11 @@
+stages:
+  - name: stage1_512_localization
+    config: configs/stage1_512.yaml
+
+  - name: stage2_512_confidence_finetune
+    config: configs/stage2_512.yaml
+    pretrained: previous_best
+
+  - name: stage3_768_highres_finetune
+    config: configs/stage3_768.yaml
+    pretrained: previous_best

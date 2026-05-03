@@ -30,6 +30,35 @@ class MetricAccumulator:
     def __init__(self, threshold: float = 0.5, max_pixel_auc_samples: int = 2_000_000):
         self.threshold = float(threshold)
         self.max_pixel_auc_samples = int(max_pixel_auc_samples)
+        self.sweep_thresholds = [
+            0.0001,
+            0.0005,
+            0.001,
+            0.002,
+            0.005,
+            0.01,
+            0.02,
+            0.05,
+            0.10,
+            0.15,
+            0.20,
+            0.25,
+            0.30,
+            0.35,
+            0.40,
+            0.45,
+            0.50,
+            0.55,
+            0.60,
+            0.65,
+            0.70,
+            0.75,
+            0.80,
+            0.85,
+            0.90,
+            0.95,
+        ]
+        self.sweep_stats = {str(t): {"tp": 0, "fp": 0, "fn": 0} for t in self.sweep_thresholds}
         self.tp = 0
         self.fp = 0
         self.fn = 0
@@ -75,6 +104,14 @@ class MetricAccumulator:
             self.fp += int(((pred == 1) & (gt == 0)).sum())
             self.fn += int(((pred == 0) & (gt == 1)).sum())
             self.tn += int(((pred == 0) & (gt == 0)).sum())
+            positives = gt == 1
+            negatives = ~positives
+            for threshold in self.sweep_thresholds:
+                sweep_pred = prob >= threshold
+                stat = self.sweep_stats[str(threshold)]
+                stat["tp"] += int((sweep_pred & positives).sum())
+                stat["fp"] += int((sweep_pred & negatives).sum())
+                stat["fn"] += int((~sweep_pred & positives).sum())
 
             if sum(x.size for x in self.pixel_scores) < self.max_pixel_auc_samples:
                 remaining = self.max_pixel_auc_samples - sum(x.size for x in self.pixel_scores)
@@ -134,6 +171,12 @@ class MetricAccumulator:
         self.image_labels.extend(other.image_labels)
         self.pixel_scores.extend(other.pixel_scores)
         self.pixel_labels.extend(other.pixel_labels)
+        for key, stat in other.sweep_stats.items():
+            if key not in self.sweep_stats:
+                self.sweep_stats[key] = {"tp": 0, "fp": 0, "fn": 0}
+            self.sweep_stats[key]["tp"] += int(stat["tp"])
+            self.sweep_stats[key]["fp"] += int(stat["fp"])
+            self.sweep_stats[key]["fn"] += int(stat["fn"])
 
     def state_dict(self) -> Dict:
         return self.__dict__.copy()
@@ -158,31 +201,12 @@ class MetricAccumulator:
         return float(tp / max(1, tp + fn))
 
     def _best_threshold_metrics(self) -> Dict[str, float]:
-        if not self.pixel_scores:
-            return {
-                "best_pixel_f1": float("nan"),
-                "best_threshold": float("nan"),
-                "best_pixel_precision": float("nan"),
-                "best_pixel_recall": float("nan"),
-            }
-        scores = np.concatenate(self.pixel_scores).astype(np.float32)
-        labels = np.concatenate(self.pixel_labels).astype(np.uint8)
-        if scores.size == 0 or labels.size == 0:
-            return {
-                "best_pixel_f1": float("nan"),
-                "best_threshold": float("nan"),
-                "best_pixel_precision": float("nan"),
-                "best_pixel_recall": float("nan"),
-            }
-        thresholds = np.unique(np.concatenate([np.linspace(0.05, 0.95, 19, dtype=np.float32), np.quantile(scores, np.linspace(0.05, 0.95, 19))]))
         best = {"f1": -1.0, "threshold": 0.5, "precision": 0.0, "recall": 0.0}
-        positives = labels == 1
-        negatives = ~positives
-        for threshold in thresholds:
-            pred = scores >= threshold
-            tp = int((pred & positives).sum())
-            fp = int((pred & negatives).sum())
-            fn = int((~pred & positives).sum())
+        for key, stat in self.sweep_stats.items():
+            threshold = float(key)
+            tp = int(stat["tp"])
+            fp = int(stat["fp"])
+            fn = int(stat["fn"])
             f1 = self._f1(tp, fp, fn)
             if f1 > best["f1"]:
                 best = {

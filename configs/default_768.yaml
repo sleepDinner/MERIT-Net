@@ -10,6 +10,9 @@ data:
   num_workers: 8
   pin_memory: true
   skip_invalid: true
+  train_crop_mode: none
+  crop_size: 768
+  tamper_crop_prob: 0.7
 
 model:
   name: MERITNet
@@ -26,6 +29,7 @@ model:
   use_confidence_head: true
   use_image_head: true
   use_family_head: false
+  use_aux_outputs: true
   use_edge_loss: true
   num_families: 5
   gradient_checkpointing: true
@@ -57,6 +61,7 @@ checkpoint:
 loss:
   final_seg: 1.0
   coarse_seg: 0.4
+  aux_seg: 0.15
   seg_bce: 1.0
   seg_dice: 1.0
   seg_focal: 0.25

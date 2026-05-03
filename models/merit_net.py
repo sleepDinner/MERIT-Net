@@ -52,6 +52,7 @@ class MERITNet(nn.Module):
         self.use_confidence_head = bool(cfg.get("use_confidence_head", True))
         self.use_image_head = bool(cfg.get("use_image_head", True))
         self.use_family_head = bool(cfg.get("use_family_head", False))
+        self.use_aux_outputs = bool(cfg.get("use_aux_outputs", False))
         self.gradient_checkpointing = bool(cfg.get("gradient_checkpointing", False))
 
         fusion_channels = cfg.get("fusion_channels", [64, 128, 256, 512])
@@ -90,7 +91,7 @@ class MERITNet(nn.Module):
         else:
             self.local_projector = _FeatureProjector(local_channels, fusion_channels)
 
-        self.decoder = LightweightDecoder(fusion_channels, embed_dim=embed_dim)
+        self.decoder = LightweightDecoder(fusion_channels, embed_dim=embed_dim, use_aux_outputs=self.use_aux_outputs)
         self.refinement = MaskGuidedRefinement(embed_dim) if self.use_refinement else None
         self.confidence_head = ConfidenceHead(embed_dim) if self.use_confidence_head else None
         self.image_head = ImageLevelHead() if self.use_image_head else None
@@ -110,7 +111,7 @@ class MERITNet(nn.Module):
     def forward(self, x: torch.Tensor, valid_region: torch.Tensor | None = None) -> Dict[str, torch.Tensor]:
         input_size = x.shape[-2:]
         features = self._encode(x)
-        coarse_full, decoder_feature, coarse_low = self.decoder(features, input_size=input_size)
+        coarse_full, decoder_feature, coarse_low, aux_outputs = self.decoder(features, input_size=input_size)
 
         if self.refinement is not None:
             final_low, final_feature = self.refinement(decoder_feature, coarse_low)
@@ -146,6 +147,8 @@ class MERITNet(nn.Module):
         }
         if family_logits is not None:
             output["family_logits"] = family_logits
+        for idx, aux in enumerate(aux_outputs, start=1):
+            output[f"aux_mask_logits_s{idx}"] = aux
         if self.fusion is not None and self.use_gated_fusion:
             output["gate_weights"] = self.fusion.last_gate_weights
         return output

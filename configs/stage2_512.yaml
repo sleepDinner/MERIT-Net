@@ -1,5 +1,5 @@
 seed: 42
-output_dir: outputs/merit_net_s_512
+output_dir: outputs/merit_net_s_512_stage2
 
 data:
   train_root: /data0/lzb-change-vmunet/FinalTrainData/
@@ -35,21 +35,22 @@ model:
   gradient_checkpointing: true
 
 train:
-  epochs: 100
+  epochs: 30
   batch_size_per_gpu: 32
   accumulate_grad_batches: 1
+  compute_train_metrics: true
   log_interval: 20
   amp: true
   optimizer: AdamW
-  lr: 0.00008
-  min_lr: 0.000001
+  lr: 0.00002
+  min_lr: 0.0000005
   weight_decay: 0.0001
-  warmup_epochs: 3
+  warmup_epochs: 2
   scheduler: cosine
   early_stopping:
     monitor: val_pixel_f1
     mode: max
-    patience: 10
+    patience: 8
 
 checkpoint:
   save_every_epoch: true
@@ -71,9 +72,9 @@ loss:
   tversky_alpha: 0.3
   tversky_beta: 0.7
   edge: 0.2
-  confidence: 0.3
-  confidence_warmup_epochs: 5
-  image: 0.5
+  confidence: 0.2
+  confidence_warmup_epochs: 0
+  image: 0.3
   family: 0.0
 
 augmentation:
@@ -94,15 +95,15 @@ augmentation:
 augmentation_schedule:
   enabled: true
   mode: progressive
-  warmup_epochs: 10
-  max_strength_epoch: 50
+  warmup_epochs: 0
+  max_strength_epoch: 20
   start:
-    jpeg_prob: 0.1
-    jpeg_quality_min: 80
-    noise_prob: 0.05
-    noise_sigma_max: 3
-    copy_move_prob: 0.05
-    inpainting_prob: 0.05
+    jpeg_prob: 0.25
+    jpeg_quality_min: 60
+    noise_prob: 0.15
+    noise_sigma_max: 6
+    copy_move_prob: 0.15
+    inpainting_prob: 0.15
   end:
     jpeg_prob: 0.45
     jpeg_quality_min: 40
@@ -114,13 +115,6 @@ augmentation_schedule:
 eval:
   threshold: 0.5
   save_predictions: true
-  metrics:
-    - pixel_f1
-    - iou
-    - pixel_auc
-    - image_auc
-    - balanced_accuracy
-    - fpr
 
 ddp:
   backend: nccl

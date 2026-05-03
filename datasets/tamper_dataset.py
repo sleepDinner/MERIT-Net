@@ -66,6 +66,7 @@ class TamperDataset(Dataset):
         is_train: bool = True,
         augmentation: Dict | None = None,
         augmentation_schedule: Dict | None = None,
+        crop_config: Dict | None = None,
         seed: int = 42,
         debug: bool = False,
         debug_limit: int = 16,
@@ -79,7 +80,7 @@ class TamperDataset(Dataset):
         self.seed = int(seed)
         self.epoch = 0
         if is_train:
-            self.transform = TrainTransform(img_size, augmentation or {}, augmentation_schedule or {}, epoch=0)
+            self.transform = TrainTransform(img_size, augmentation or {}, augmentation_schedule or {}, epoch=0, crop_config=crop_config or {})
         else:
             self.transform = EvalTransform(img_size)
 

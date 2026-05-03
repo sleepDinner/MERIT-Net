@@ -1,5 +1,5 @@
 seed: 42
-output_dir: outputs/merit_net_s_512
+output_dir: outputs/merit_net_s_512_stage1
 
 data:
   train_root: /data0/lzb-change-vmunet/FinalTrainData/
@@ -26,8 +26,8 @@ model:
   use_transformer_branch: true
   use_gated_fusion: true
   use_refinement: true
-  use_confidence_head: true
-  use_image_head: true
+  use_confidence_head: false
+  use_image_head: false
   use_family_head: false
   use_aux_outputs: true
   use_edge_loss: true
@@ -35,9 +35,10 @@ model:
   gradient_checkpointing: true
 
 train:
-  epochs: 100
+  epochs: 70
   batch_size_per_gpu: 32
   accumulate_grad_batches: 1
+  compute_train_metrics: true
   log_interval: 20
   amp: true
   optimizer: AdamW
@@ -49,7 +50,7 @@ train:
   early_stopping:
     monitor: val_pixel_f1
     mode: max
-    patience: 10
+    patience: 12
 
 checkpoint:
   save_every_epoch: true
@@ -71,9 +72,9 @@ loss:
   tversky_alpha: 0.3
   tversky_beta: 0.7
   edge: 0.2
-  confidence: 0.3
-  confidence_warmup_epochs: 5
-  image: 0.5
+  confidence: 0.0
+  confidence_warmup_epochs: 999
+  image: 0.0
   family: 0.0
 
 augmentation:
@@ -114,13 +115,6 @@ augmentation_schedule:
 eval:
   threshold: 0.5
   save_predictions: true
-  metrics:
-    - pixel_f1
-    - iou
-    - pixel_auc
-    - image_auc
-    - balanced_accuracy
-    - fpr
 
 ddp:
   backend: nccl

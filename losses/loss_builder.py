@@ -20,6 +20,7 @@ class MERITLoss(nn.Module):
         self.weights = {
             "final_seg": float(loss_cfg.get("final_seg", 1.0)),
             "coarse_seg": float(loss_cfg.get("coarse_seg", 0.4)),
+            "aux_seg": float(loss_cfg.get("aux_seg", 0.0)),
             "edge": float(loss_cfg.get("edge", 0.2)) if model_cfg.get("use_edge_loss", True) else 0.0,
             "confidence": float(loss_cfg.get("confidence", 0.3)),
             "image": float(loss_cfg.get("image", 0.5)),
@@ -57,6 +58,20 @@ class MERITLoss(nn.Module):
         total = total + self.weights["final_seg"] * final_seg + self.weights["coarse_seg"] * coarse_seg
         logs["loss_final_seg"] = final_seg.detach()
         logs["loss_coarse_seg"] = coarse_seg.detach()
+
+        aux_losses = []
+        if self.weights["aux_seg"] > 0:
+            for key, value in outputs.items():
+                if key.startswith("aux_mask_logits_s"):
+                    aux_losses.append(self.seg_loss(value, target, valid))
+            if aux_losses:
+                aux_seg = torch.stack(aux_losses).mean()
+                total = total + self.weights["aux_seg"] * aux_seg
+                logs["loss_aux_seg"] = aux_seg.detach()
+            else:
+                logs["loss_aux_seg"] = target.new_tensor(0.0)
+        else:
+            logs["loss_aux_seg"] = target.new_tensor(0.0)
 
         if self.weights["edge"] > 0:
             edge = self.edge_loss(outputs["final_mask_logits"], target, valid)

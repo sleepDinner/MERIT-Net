@@ -161,11 +161,47 @@ def _inpaint_or_remove(image: Image.Image, mask: Image.Image, rng: random.Random
     return Image.fromarray(img_arr, mode="RGB"), Image.fromarray(mask_arr, mode="L")
 
 
+def _focused_random_crop(
+    image: Image.Image,
+    mask: Image.Image,
+    crop_size: int,
+    rng: random.Random,
+    tamper_crop_prob: float = 0.7,
+) -> tuple[Image.Image, Image.Image]:
+    width, height = image.size
+    crop_w = min(int(crop_size), width)
+    crop_h = min(int(crop_size), height)
+    if crop_w <= 0 or crop_h <= 0 or (crop_w == width and crop_h == height):
+        return image, mask
+
+    mask_arr = np.asarray(mask.convert("L"))
+    ys, xs = np.where(mask_arr > 0)
+    if len(xs) > 0 and rng.random() < tamper_crop_prob:
+        idx = rng.randrange(len(xs))
+        cx = int(xs[idx] + rng.randint(-crop_w // 4, crop_w // 4))
+        cy = int(ys[idx] + rng.randint(-crop_h // 4, crop_h // 4))
+        left = max(0, min(width - crop_w, cx - crop_w // 2))
+        top = max(0, min(height - crop_h, cy - crop_h // 2))
+    else:
+        left = rng.randint(0, max(0, width - crop_w))
+        top = rng.randint(0, max(0, height - crop_h))
+    box = (left, top, left + crop_w, top + crop_h)
+    return image.crop(box), mask.crop(box)
+
+
 class TrainTransform:
-    def __init__(self, img_size: int, augmentation: Dict, schedule: Dict | None = None, epoch: int = 0):
+    def __init__(
+        self,
+        img_size: int,
+        augmentation: Dict,
+        schedule: Dict | None = None,
+        epoch: int = 0,
+        crop_config: Dict | None = None,
+    ):
         self.img_size = int(img_size)
         self.augmentation = augmentation or {}
         self.schedule = schedule or {}
+        self.crop_config = crop_config or {}
         self.epoch = epoch
         self.state = current_augmentation_state(self.augmentation, self.schedule, epoch)
 
@@ -194,6 +230,14 @@ class TrainTransform:
     def __call__(self, image: Image.Image, mask: Image.Image, rng: random.Random):
         image = image.convert("RGB")
         mask = mask.convert("L").point(lambda p: 255 if p > 0 else 0)
+        if self.crop_config.get("train_crop_mode", "none") == "random_crop":
+            image, mask = _focused_random_crop(
+                image,
+                mask,
+                int(self.crop_config.get("crop_size", self.img_size)),
+                rng,
+                float(self.crop_config.get("tamper_crop_prob", 0.7)),
+            )
         image, mask = self._geometric(image, mask, rng)
         if rng.random() < self.state.copy_move_prob:
             image, mask = _copy_move(image, mask, rng)

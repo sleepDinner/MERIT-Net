@@ -73,6 +73,7 @@ def main() -> None:
             output_csv=result_dir / f"{name}_metrics.csv",
             batch_size=args.batch_size,
             num_workers=args.num_workers,
+            progress_name=f"test-{name}",
         )
         row = {"dataset": name, "num_samples": len(samples), **metrics}
         summary_rows.append(row)

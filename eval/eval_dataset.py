@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import csv
 import sys
+import time
 from pathlib import Path
 from typing import Dict
 
@@ -14,6 +15,7 @@ if str(ROOT) not in sys.path:
 
 from datasets.tamper_dataset import TamperDataset
 from eval.metrics import MetricAccumulator
+from engines.progress import ProgressLine, progress_message
 from models.merit_net import MERITNet
 
 
@@ -35,6 +37,8 @@ def evaluate_split(
     output_csv: str | Path | None = None,
     batch_size: int = 1,
     num_workers: int = 4,
+    progress_name: str = "eval",
+    show_progress: bool = True,
 ) -> Dict[str, float]:
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model = load_model_from_checkpoint(config, ckpt_path, device)
@@ -47,7 +51,10 @@ def evaluate_split(
     loader = DataLoader(dataset, batch_size=batch_size, shuffle=False, num_workers=num_workers, pin_memory=True)
     acc = MetricAccumulator(threshold=float(config.get("eval", {}).get("threshold", 0.5)))
     per_image_rows = []
-    for batch in loader:
+    progress = ProgressLine() if show_progress else None
+    start_time = time.perf_counter()
+    total_steps = len(loader)
+    for step, batch in enumerate(loader, start=1):
         images = batch["image"].to(device, non_blocking=True)
         valid = batch["valid_region"].to(device, non_blocking=True)
         masks = batch["mask"].to(device, non_blocking=True)
@@ -57,6 +64,10 @@ def evaluate_split(
         image_scores = torch.sigmoid(outputs["image_logits"]).detach().cpu().view(-1).tolist()
         for path, score, label in zip(batch["image_path"], image_scores, batch["image_level_label"].tolist()):
             per_image_rows.append({"image_path": path, "image_score": score, "image_level_label": int(label)})
+        if progress is not None and (step == 1 or step % 10 == 0 or step == total_steps):
+            progress.update(progress_message(progress_name, 1, 1, step, total_steps, start_time))
+    if progress is not None:
+        progress.finish()
     metrics = acc.compute()
     if output_csv:
         output_csv = Path(output_csv)
