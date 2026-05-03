@@ -113,6 +113,8 @@ Then use the listed `best_checkpoint_path` for testing.
 python eval/eval_all_testsets.py --config configs/default_512.yaml --ckpt outputs/merit_net_s_512/checkpoints/epochXX.pth
 ```
 
+Evaluation defaults to `--batch_size 64`. Lower it if test-time memory is insufficient.
+
 The script evaluates:
 
 ```text

@@ -21,7 +21,7 @@ def parse_args():
     parser.add_argument("--split", default=None)
     parser.add_argument("--input_root", default=None)
     parser.add_argument("--output_csv", default="outputs/test_metrics.csv")
-    parser.add_argument("--batch_size", type=int, default=1)
+    parser.add_argument("--batch_size", type=int, default=64)
     parser.add_argument("--num_workers", type=int, default=0)
     parser.add_argument("--threshold", type=float, default=None)
     return parser.parse_args()

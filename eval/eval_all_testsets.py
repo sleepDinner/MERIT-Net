@@ -29,7 +29,7 @@ def parse_args():
     parser = argparse.ArgumentParser(description="Evaluate MERIT-Net on all configured test sets.")
     parser.add_argument("--config", required=True)
     parser.add_argument("--ckpt", required=True)
-    parser.add_argument("--batch_size", type=int, default=1)
+    parser.add_argument("--batch_size", type=int, default=64)
     parser.add_argument("--num_workers", type=int, default=4)
     parser.add_argument("--threshold", type=float, default=None, help="Override eval.threshold from config.")
     return parser.parse_args()
