@@ -31,6 +31,7 @@ def parse_args():
     parser.add_argument("--ckpt", required=True)
     parser.add_argument("--batch_size", type=int, default=1)
     parser.add_argument("--num_workers", type=int, default=4)
+    parser.add_argument("--threshold", type=float, default=None, help="Override eval.threshold from config.")
     return parser.parse_args()
 
 
@@ -38,6 +39,8 @@ def main() -> None:
     args = parse_args()
     with open(args.config, "r", encoding="utf-8") as f:
         config = yaml.safe_load(f)
+    if args.threshold is not None:
+        config.setdefault("eval", {})["threshold"] = args.threshold
     output_root = Path("outputs")
     split_dir = output_root / "test_splits"
     result_dir = output_root / "test_results"

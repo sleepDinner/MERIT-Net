@@ -32,7 +32,16 @@ class MERITLoss(nn.Module):
         if not model_cfg.get("use_family_head", False):
             self.weights["family"] = 0.0
         self.confidence_warmup_epochs = int(loss_cfg.get("confidence_warmup_epochs", 5))
-        self.seg_loss = SegmentationLoss()
+        self.seg_loss = SegmentationLoss(
+            bce_weight=float(loss_cfg.get("seg_bce", 1.0)),
+            dice_weight=float(loss_cfg.get("seg_dice", 1.0)),
+            focal_weight=float(loss_cfg.get("seg_focal", 0.0)),
+            tversky_weight=float(loss_cfg.get("seg_tversky", 0.0)),
+            focal_alpha=float(loss_cfg.get("focal_alpha", 0.75)),
+            focal_gamma=float(loss_cfg.get("focal_gamma", 2.0)),
+            tversky_alpha=float(loss_cfg.get("tversky_alpha", 0.3)),
+            tversky_beta=float(loss_cfg.get("tversky_beta", 0.7)),
+        )
         self.edge_loss = EdgeLoss()
         self.confidence_loss = ConfidenceLoss(mode=loss_cfg.get("confidence_mode", "l1"))
         self.image_loss = ImageLevelLoss()

@@ -6,13 +6,17 @@ import json
 import random
 import re
 import time
+import warnings
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Callable, Dict, Iterable, List, Optional, Tuple
 
 import numpy as np
 from PIL import Image
+from PIL import ImageFile
 
+ImageFile.LOAD_TRUNCATED_IMAGES = True
+warnings.filterwarnings("ignore", message="Corrupt EXIF data.*")
 
 IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".bmp", ".tif", ".tiff", ".webp"}
 MASK_KEYWORDS = {

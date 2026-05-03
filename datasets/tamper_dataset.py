@@ -2,15 +2,19 @@ from __future__ import annotations
 
 import csv
 import random
+import warnings
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, List
 
 import torch
-from PIL import Image
+from PIL import Image, ImageFile
 from torch.utils.data import Dataset
 
 from datasets.transforms import EvalTransform, TrainTransform
+
+ImageFile.LOAD_TRUNCATED_IMAGES = True
+warnings.filterwarnings("ignore", message="Corrupt EXIF data.*")
 
 
 @dataclass

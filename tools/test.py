@@ -23,6 +23,7 @@ def parse_args():
     parser.add_argument("--output_csv", default="outputs/test_metrics.csv")
     parser.add_argument("--batch_size", type=int, default=1)
     parser.add_argument("--num_workers", type=int, default=0)
+    parser.add_argument("--threshold", type=float, default=None)
     return parser.parse_args()
 
 
@@ -30,6 +31,8 @@ def main() -> None:
     args = parse_args()
     with open(args.config, "r", encoding="utf-8") as f:
         config = yaml.safe_load(f)
+    if args.threshold is not None:
+        config.setdefault("eval", {})["threshold"] = args.threshold
     split = args.split
     if split is None:
         if args.input_root is None:

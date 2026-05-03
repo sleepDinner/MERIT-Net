@@ -84,6 +84,9 @@ def validate(
         logger.info(
             f"Epoch {epoch}/{total_epochs} {prefix} metrics | "
             f"pixel_f1={metrics.get(prefix + '_pixel_f1', float('nan')):.5f} "
+            f"best_f1={metrics.get(prefix + '_best_pixel_f1', float('nan')):.5f} "
+            f"best_thr={metrics.get(prefix + '_best_threshold', float('nan')):.3f} "
+            f"recall={metrics.get(prefix + '_pixel_recall', float('nan')):.5f} "
             f"iou={metrics.get(prefix + '_iou', float('nan')):.5f} "
             f"pixel_auc={metrics.get(prefix + '_pixel_auc', float('nan')):.5f} "
             f"image_auc={metrics.get(prefix + '_image_auc', float('nan')):.5f} "

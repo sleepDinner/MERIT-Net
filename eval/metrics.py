@@ -149,9 +149,60 @@ class MetricAccumulator:
         denom = 2 * tp + fp + fn
         return float(2 * tp / denom) if denom > 0 else 0.0
 
+    @staticmethod
+    def _precision(tp: int, fp: int) -> float:
+        return float(tp / max(1, tp + fp))
+
+    @staticmethod
+    def _recall(tp: int, fn: int) -> float:
+        return float(tp / max(1, tp + fn))
+
+    def _best_threshold_metrics(self) -> Dict[str, float]:
+        if not self.pixel_scores:
+            return {
+                "best_pixel_f1": float("nan"),
+                "best_threshold": float("nan"),
+                "best_pixel_precision": float("nan"),
+                "best_pixel_recall": float("nan"),
+            }
+        scores = np.concatenate(self.pixel_scores).astype(np.float32)
+        labels = np.concatenate(self.pixel_labels).astype(np.uint8)
+        if scores.size == 0 or labels.size == 0:
+            return {
+                "best_pixel_f1": float("nan"),
+                "best_threshold": float("nan"),
+                "best_pixel_precision": float("nan"),
+                "best_pixel_recall": float("nan"),
+            }
+        thresholds = np.unique(np.concatenate([np.linspace(0.05, 0.95, 19, dtype=np.float32), np.quantile(scores, np.linspace(0.05, 0.95, 19))]))
+        best = {"f1": -1.0, "threshold": 0.5, "precision": 0.0, "recall": 0.0}
+        positives = labels == 1
+        negatives = ~positives
+        for threshold in thresholds:
+            pred = scores >= threshold
+            tp = int((pred & positives).sum())
+            fp = int((pred & negatives).sum())
+            fn = int((~pred & positives).sum())
+            f1 = self._f1(tp, fp, fn)
+            if f1 > best["f1"]:
+                best = {
+                    "f1": f1,
+                    "threshold": float(threshold),
+                    "precision": self._precision(tp, fp),
+                    "recall": self._recall(tp, fn),
+                }
+        return {
+            "best_pixel_f1": best["f1"],
+            "best_threshold": best["threshold"],
+            "best_pixel_precision": best["precision"],
+            "best_pixel_recall": best["recall"],
+        }
+
     def compute(self, prefix: str = "") -> Dict[str, float]:
         tp, fp, fn, tn = self.tp, self.fp, self.fn, self.tn
         pixel_f1 = self._f1(tp, fp, fn)
+        pixel_precision = self._precision(tp, fp)
+        pixel_recall = self._recall(tp, fn)
         iou = float(tp / max(1, tp + fp + fn))
         tpr = float(tp / max(1, tp + fn))
         tnr = float(tn / max(1, tn + fp))
@@ -171,6 +222,8 @@ class MetricAccumulator:
 
         metrics = {
             "pixel_f1": pixel_f1,
+            "pixel_precision": pixel_precision,
+            "pixel_recall": pixel_recall,
             "iou": iou,
             "pixel_auc": pixel_auc,
             "image_auc": image_auc,
@@ -180,6 +233,7 @@ class MetricAccumulator:
             "small_region_f1": small_f1,
             "boundary_f1": boundary_f1,
         }
+        metrics.update(self._best_threshold_metrics())
         if prefix:
             return {f"{prefix}_{k}": v for k, v in metrics.items()}
         return metrics

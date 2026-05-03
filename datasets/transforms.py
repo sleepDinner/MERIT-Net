@@ -8,7 +8,7 @@ from typing import Dict, Tuple
 
 import numpy as np
 import torch
-from PIL import Image, ImageDraw, ImageFilter
+from PIL import Image, ImageDraw, ImageEnhance, ImageFilter
 
 
 IMAGENET_MEAN = torch.tensor([0.485, 0.456, 0.406]).view(3, 1, 1)
@@ -85,6 +85,16 @@ def _add_gaussian_noise(image: Image.Image, sigma: float, rng: random.Random) ->
     noise = np_rng.normal(0.0, sigma, size=arr.shape)
     arr = np.clip(arr + noise, 0, 255).astype(np.uint8)
     return Image.fromarray(arr, mode="RGB")
+
+
+def _color_jitter(image: Image.Image, rng: random.Random, strength: float = 0.15) -> Image.Image:
+    brightness = 1.0 + rng.uniform(-strength, strength)
+    contrast = 1.0 + rng.uniform(-strength, strength)
+    color = 1.0 + rng.uniform(-strength, strength)
+    image = ImageEnhance.Brightness(image).enhance(brightness)
+    image = ImageEnhance.Contrast(image).enhance(contrast)
+    image = ImageEnhance.Color(image).enhance(color)
+    return image
 
 
 def _random_box(width: int, height: int, rng: random.Random, min_ratio: float = 0.08, max_ratio: float = 0.35):
@@ -189,6 +199,10 @@ class TrainTransform:
             image, mask = _copy_move(image, mask, rng)
         if rng.random() < self.state.inpainting_prob:
             image, mask = _inpaint_or_remove(image, mask, rng)
+        if rng.random() < float(self.augmentation.get("color_jitter_prob", 0.0)):
+            image = _color_jitter(image, rng, float(self.augmentation.get("color_jitter_strength", 0.15)))
+        if rng.random() < float(self.augmentation.get("blur_prob", 0.0)):
+            image = image.filter(ImageFilter.GaussianBlur(radius=rng.uniform(0.2, float(self.augmentation.get("blur_radius", 1.2)))))
         if rng.random() < self.state.jpeg_prob:
             q = rng.randint(int(self.state.jpeg_quality[0]), int(self.state.jpeg_quality[1]))
             image = _jpeg_compress(image, q)

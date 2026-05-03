@@ -57,6 +57,14 @@ checkpoint:
 loss:
   final_seg: 1.0
   coarse_seg: 0.4
+  seg_bce: 1.0
+  seg_dice: 1.0
+  seg_focal: 0.25
+  seg_tversky: 0.35
+  focal_alpha: 0.75
+  focal_gamma: 2.0
+  tversky_alpha: 0.3
+  tversky_beta: 0.7
   edge: 0.2
   confidence: 0.3
   confidence_warmup_epochs: 5
@@ -71,6 +79,10 @@ augmentation:
   jpeg_quality: [40, 95]
   noise_prob: 0.2
   noise_sigma: [0, 10]
+  color_jitter_prob: 0.2
+  color_jitter_strength: 0.12
+  blur_prob: 0.08
+  blur_radius: 1.0
   copy_move_prob: 0.2
   inpainting_prob: 0.2
 
@@ -87,12 +99,12 @@ augmentation_schedule:
     copy_move_prob: 0.05
     inpainting_prob: 0.05
   end:
-    jpeg_prob: 0.4
+    jpeg_prob: 0.45
     jpeg_quality_min: 40
-    noise_prob: 0.25
+    noise_prob: 0.30
     noise_sigma_max: 10
-    copy_move_prob: 0.25
-    inpainting_prob: 0.25
+    copy_move_prob: 0.30
+    inpainting_prob: 0.30
 
 eval:
   threshold: 0.5
