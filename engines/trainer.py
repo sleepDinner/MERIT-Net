@@ -82,7 +82,6 @@ def _format_metric(value: object) -> str:
 def _checkpoint_metric_info(
     prefix: str,
     train_logs: Dict[str, float],
-    train_metric_logs: Dict[str, float],
     val_logs: Dict[str, float],
     monitor: str,
 ) -> Dict[str, str]:
@@ -90,9 +89,6 @@ def _checkpoint_metric_info(
         f"{prefix}_monitor_name": monitor,
         f"{prefix}_monitor_value": _format_metric(val_logs.get(monitor)),
         f"{prefix}_train_loss_total": _format_metric(train_logs.get("loss_total")),
-        f"{prefix}_train_eval_loss_total": _format_metric(train_metric_logs.get("train_loss_total")),
-        f"{prefix}_train_eval_pixel_f1": _format_metric(train_metric_logs.get("train_pixel_f1")),
-        f"{prefix}_train_eval_pixel_auc": _format_metric(train_metric_logs.get("train_pixel_auc")),
         f"{prefix}_val_loss_total": _format_metric(val_logs.get("val_loss_total")),
         f"{prefix}_val_loss_final_seg": _format_metric(val_logs.get("val_loss_final_seg")),
         f"{prefix}_val_loss_coarse_seg": _format_metric(val_logs.get("val_loss_coarse_seg")),
@@ -611,7 +607,7 @@ def train(config: Dict, resume: str | None = None, pretrained: str | None = None
                     "latest_epoch": epoch,
                     "latest_checkpoint_file": ckpt_path.name,
                     "latest_checkpoint_path": str(ckpt_path),
-                    **_checkpoint_metric_info("latest", train_logs, train_metric_logs, val_logs, monitor),
+                    **_checkpoint_metric_info("latest", train_logs, val_logs, monitor),
                 },
             )
             if improved:
@@ -621,7 +617,7 @@ def train(config: Dict, resume: str | None = None, pretrained: str | None = None
                     "best_metric_value": f"{best_metric:.6f}",
                     "best_checkpoint_file": ckpt_path.name,
                     "best_checkpoint_path": str(ckpt_path),
-                    **_checkpoint_metric_info("best", train_logs, train_metric_logs, val_logs, monitor),
+                    **_checkpoint_metric_info("best", train_logs, val_logs, monitor),
                 }
                 if "val_best_score_raw" in val_logs:
                     best_info["best_score_raw"] = f"{val_logs.get('val_best_score_raw', float('nan')):.6f}"
