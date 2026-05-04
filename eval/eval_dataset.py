@@ -47,6 +47,7 @@ def evaluate_split(
         img_size=int(config.get("data", {}).get("img_size", config.get("model", {}).get("img_size", 512))),
         is_train=False,
         seed=int(config.get("seed", 42)),
+        crop_config=config.get("data", {}),
     )
     loader = DataLoader(dataset, batch_size=batch_size, shuffle=False, num_workers=num_workers, pin_memory=True)
     acc = MetricAccumulator(threshold=float(config.get("eval", {}).get("threshold", 0.5)))

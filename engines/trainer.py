@@ -84,9 +84,10 @@ def _add_best_score(metrics: Dict[str, float], eval_cfg: Dict) -> None:
     weights = score_cfg.get(
         "weights",
         {
-            "val_best_pixel_f1": 0.5,
-            "val_pixel_auc": 0.3,
+            "val_pixel_f1": 0.4,
+            "val_best_pixel_f1": 0.3,
             "val_boundary_f1": 0.2,
+            "val_pixel_auc": 0.1,
         },
     )
     total_weight = 0.0
@@ -244,6 +245,7 @@ def train(config: Dict, resume: str | None = None, pretrained: str | None = None
             is_train=False,
             seed=int(config.get("seed", 42)),
             debug=debug,
+            crop_config=data_cfg,
         )
         if compute_epoch_train_metrics
         else None
@@ -254,6 +256,7 @@ def train(config: Dict, resume: str | None = None, pretrained: str | None = None
         is_train=False,
         seed=int(config.get("seed", 42)),
         debug=debug,
+        crop_config=data_cfg,
     )
     if len(train_dataset) == 0 or len(val_dataset) == 0:
         raise RuntimeError(f"Empty train/val dataset. train={len(train_dataset)}, val={len(val_dataset)}")

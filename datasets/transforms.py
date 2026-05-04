@@ -15,6 +15,20 @@ IMAGENET_MEAN = torch.tensor([0.485, 0.456, 0.406]).view(3, 1, 1)
 IMAGENET_STD = torch.tensor([0.229, 0.224, 0.225]).view(3, 1, 1)
 
 
+def binarize_mask_array(mask: np.ndarray, threshold: float = 127.0) -> np.ndarray:
+    """Convert common 0/255 or 0/1 masks into a clean binary float array."""
+
+    arr = np.asarray(mask)
+    if arr.ndim == 3:
+        arr = arr.mean(axis=2)
+    arr = arr.astype(np.float32, copy=False)
+    if arr.size == 0:
+        return arr.astype(np.float32)
+    if float(np.nanmax(arr)) <= 1.5:
+        return (arr > 0.5).astype(np.float32)
+    return (arr > float(threshold)).astype(np.float32)
+
+
 @dataclass
 class AugmentationState:
     jpeg_prob: float
@@ -167,6 +181,7 @@ def _focused_random_crop(
     crop_size: int,
     rng: random.Random,
     tamper_crop_prob: float = 0.7,
+    mask_threshold: float = 127.0,
 ) -> tuple[Image.Image, Image.Image]:
     width, height = image.size
     crop_w = min(int(crop_size), width)
@@ -174,7 +189,7 @@ def _focused_random_crop(
     if crop_w <= 0 or crop_h <= 0 or (crop_w == width and crop_h == height):
         return image, mask
 
-    mask_arr = np.asarray(mask.convert("L"))
+    mask_arr = binarize_mask_array(np.asarray(mask.convert("L")), threshold=mask_threshold)
     ys, xs = np.where(mask_arr > 0)
     if len(xs) > 0 and rng.random() < tamper_crop_prob:
         idx = rng.randrange(len(xs))
@@ -202,6 +217,9 @@ class TrainTransform:
         self.augmentation = augmentation or {}
         self.schedule = schedule or {}
         self.crop_config = crop_config or {}
+        self.mask_threshold = float(self.crop_config.get("mask_threshold", 127.0))
+        self.pad_position = str(self.crop_config.get("pad_position", "top_left"))
+        self.preprocess_mode = str(self.crop_config.get("preprocess_mode", "pad"))
         self.epoch = epoch
         self.state = current_augmentation_state(self.augmentation, self.schedule, epoch)
 
@@ -209,8 +227,16 @@ class TrainTransform:
         self.epoch = epoch
         self.state = current_augmentation_state(self.augmentation, self.schedule, epoch)
 
-    def log_state(self) -> Dict[str, float]:
-        return augmentation_state_to_log(self.state)
+    def log_state(self) -> Dict[str, float | str]:
+        state = augmentation_state_to_log(self.state)
+        crop_mode = str(self.crop_config.get("train_crop_mode", "none"))
+        state["train_crop_mode"] = crop_mode
+        state["preprocess_mode"] = self.preprocess_mode
+        state["pad_position"] = self.pad_position
+        state["mask_threshold"] = self.mask_threshold
+        if crop_mode in {"mixed", "mixed_crop", "random_crop"}:
+            state["current_crop_prob"] = float(self.crop_config.get("crop_prob", 1.0 if crop_mode == "random_crop" else 0.5))
+        return state
 
     def _geometric(self, image: Image.Image, mask: Image.Image, rng: random.Random):
         aug = self.augmentation
@@ -229,14 +255,18 @@ class TrainTransform:
 
     def __call__(self, image: Image.Image, mask: Image.Image, rng: random.Random):
         image = image.convert("RGB")
-        mask = mask.convert("L").point(lambda p: 255 if p > 0 else 0)
-        if self.crop_config.get("train_crop_mode", "none") == "random_crop":
+        mask = mask.convert("L")
+        crop_mode = str(self.crop_config.get("train_crop_mode", "none"))
+        crop_prob = float(self.crop_config.get("crop_prob", 1.0 if crop_mode == "random_crop" else 0.5))
+        use_crop = crop_mode == "random_crop" or (crop_mode in {"mixed", "mixed_crop"} and rng.random() < crop_prob)
+        if use_crop:
             image, mask = _focused_random_crop(
                 image,
                 mask,
                 int(self.crop_config.get("crop_size", self.img_size)),
                 rng,
                 float(self.crop_config.get("tamper_crop_prob", 0.7)),
+                self.mask_threshold,
             )
         image, mask = self._geometric(image, mask, rng)
         if rng.random() < self.state.copy_move_prob:
@@ -253,36 +283,84 @@ class TrainTransform:
         if rng.random() < self.state.noise_prob:
             sigma = rng.uniform(float(self.state.noise_sigma[0]), float(self.state.noise_sigma[1]))
             image = _add_gaussian_noise(image, sigma, rng)
-        return resize_pad_normalize(image, mask, self.img_size)
+        return resize_pad_normalize(
+            image,
+            mask,
+            self.img_size,
+            pad_position=self.pad_position,
+            mask_threshold=self.mask_threshold,
+            preprocess_mode=self.preprocess_mode,
+        )
 
 
 class EvalTransform:
-    def __init__(self, img_size: int):
+    def __init__(self, img_size: int, preprocess_config: Dict | None = None):
         self.img_size = int(img_size)
+        self.preprocess_config = preprocess_config or {}
+        self.mask_threshold = float(self.preprocess_config.get("mask_threshold", 127.0))
+        self.pad_position = str(self.preprocess_config.get("pad_position", "top_left"))
+        self.preprocess_mode = str(self.preprocess_config.get("preprocess_mode", "pad"))
 
     def set_epoch(self, epoch: int) -> None:
         return None
 
-    def log_state(self) -> Dict[str, float]:
-        return {}
+    def log_state(self) -> Dict[str, float | str]:
+        return {
+            "preprocess_mode": self.preprocess_mode,
+            "pad_position": self.pad_position,
+            "mask_threshold": self.mask_threshold,
+        }
 
     def __call__(self, image: Image.Image, mask: Image.Image, rng: random.Random | None = None):
-        return resize_pad_normalize(image.convert("RGB"), mask.convert("L"), self.img_size)
+        return resize_pad_normalize(
+            image.convert("RGB"),
+            mask.convert("L"),
+            self.img_size,
+            pad_position=self.pad_position,
+            mask_threshold=self.mask_threshold,
+            preprocess_mode=self.preprocess_mode,
+        )
 
 
-def resize_pad_normalize(image: Image.Image, mask: Image.Image, img_size: int):
+def resize_pad_normalize(
+    image: Image.Image,
+    mask: Image.Image,
+    img_size: int,
+    pad_position: str = "top_left",
+    mask_threshold: float = 127.0,
+    preprocess_mode: str = "pad",
+):
     width, height = image.size
-    scale = min(float(img_size) / max(width, 1), float(img_size) / max(height, 1), 1.0)
-    new_w = max(1, int(round(width * scale)))
-    new_h = max(1, int(round(height * scale)))
-    if (new_w, new_h) != (width, height):
-        image = image.resize((new_w, new_h), Image.BILINEAR)
-        mask = mask.resize((new_w, new_h), Image.NEAREST)
+    preprocess_mode = str(preprocess_mode).lower()
+    if preprocess_mode not in {"pad", "resize"}:
+        raise ValueError(f"Unsupported preprocess_mode={preprocess_mode!r}; expected 'pad' or 'resize'.")
+
+    if preprocess_mode == "resize":
+        image = image.resize((img_size, img_size), Image.BILINEAR)
+        mask = mask.resize((img_size, img_size), Image.NEAREST)
+        new_w = img_size
+        new_h = img_size
+        offset_x = 0
+        offset_y = 0
+    else:
+        scale = min(float(img_size) / max(width, 1), float(img_size) / max(height, 1), 1.0)
+        new_w = max(1, int(round(width * scale)))
+        new_h = max(1, int(round(height * scale)))
+        if (new_w, new_h) != (width, height):
+            image = image.resize((new_w, new_h), Image.BILINEAR)
+            mask = mask.resize((new_w, new_h), Image.NEAREST)
+        pad_position = str(pad_position).lower()
+        if pad_position in {"center", "centre"}:
+            offset_x = (img_size - new_w) // 2
+            offset_y = (img_size - new_h) // 2
+        elif pad_position in {"top_left", "topleft", "left_top"}:
+            offset_x = 0
+            offset_y = 0
+        else:
+            raise ValueError(f"Unsupported pad_position={pad_position!r}; expected 'top_left' or 'center'.")
 
     padded_img = Image.new("RGB", (img_size, img_size), (0, 0, 0))
     padded_mask = Image.new("L", (img_size, img_size), 0)
-    offset_x = (img_size - new_w) // 2
-    offset_y = (img_size - new_h) // 2
     padded_img.paste(image, (offset_x, offset_y))
     padded_mask.paste(mask, (offset_x, offset_y))
 
@@ -291,8 +369,8 @@ def resize_pad_normalize(image: Image.Image, mask: Image.Image, img_size: int):
     draw.rectangle((offset_x, offset_y, offset_x + new_w - 1, offset_y + new_h - 1), fill=255)
 
     img_arr = np.asarray(padded_img).astype(np.float32) / 255.0
-    mask_arr = (np.asarray(padded_mask) > 0).astype(np.float32)
     valid_arr = (np.asarray(valid) > 0).astype(np.float32)
+    mask_arr = binarize_mask_array(np.asarray(padded_mask), threshold=mask_threshold)
 
     image_t = torch.from_numpy(img_arr).permute(2, 0, 1)
     image_t = (image_t - IMAGENET_MEAN) / IMAGENET_STD

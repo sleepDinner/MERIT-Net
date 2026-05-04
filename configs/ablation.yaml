@@ -11,6 +11,13 @@ data:
   eval_num_workers: 4
   pin_memory: true
   skip_invalid: true
+  preprocess_mode: pad
+  pad_position: top_left
+  mask_threshold: 127
+  train_crop_mode: mixed
+  crop_size: 512
+  tamper_crop_prob: 0.7
+  crop_prob: 0.5
 
 model:
   name: MERITNet
@@ -119,9 +126,10 @@ eval:
   save_predictions: true
   best_score:
     weights:
-      val_best_pixel_f1: 0.5
-      val_pixel_auc: 0.3
+      val_pixel_f1: 0.4
+      val_best_pixel_f1: 0.3
       val_boundary_f1: 0.2
+      val_pixel_auc: 0.1
   metrics:
     - pixel_f1
     - iou

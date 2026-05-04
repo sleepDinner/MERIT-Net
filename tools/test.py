@@ -37,7 +37,13 @@ def main() -> None:
     if split is None:
         if args.input_root is None:
             raise ValueError("Provide either --split or --input_root.")
-        samples, _ = scan_dataset(args.input_root, output_dir="outputs", skipped_csv_name="test_skipped_samples.csv", valid_csv_name="test_valid_samples.csv")
+        samples, _ = scan_dataset(
+            args.input_root,
+            output_dir="outputs",
+            skipped_csv_name="test_skipped_samples.csv",
+            valid_csv_name="test_valid_samples.csv",
+            mask_threshold=float(config.get("data", {}).get("mask_threshold", 127.0)),
+        )
         split = Path("outputs/test_splits/single_test.txt")
         write_split(split, samples)
     metrics = evaluate_split(

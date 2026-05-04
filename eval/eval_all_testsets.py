@@ -56,6 +56,7 @@ def main() -> None:
             skipped_csv_name=f"test_{name}_skipped_samples.csv",
             valid_csv_name=f"test_{name}_valid_samples.csv",
             auto_black_for_authentic=True,
+            mask_threshold=float(config.get("data", {}).get("mask_threshold", 127.0)),
         )
         for item in skipped:
             all_skipped.append({"dataset": name, "image_path": item.image_path, "mask_path": item.mask_path, "reason": item.reason})

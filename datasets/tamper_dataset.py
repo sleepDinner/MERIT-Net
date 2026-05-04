@@ -82,14 +82,14 @@ class TamperDataset(Dataset):
         if is_train:
             self.transform = TrainTransform(img_size, augmentation or {}, augmentation_schedule or {}, epoch=0, crop_config=crop_config or {})
         else:
-            self.transform = EvalTransform(img_size)
+            self.transform = EvalTransform(img_size, preprocess_config=crop_config or {})
 
     def set_epoch(self, epoch: int) -> None:
         self.epoch = int(epoch)
         if hasattr(self.transform, "set_epoch"):
             self.transform.set_epoch(epoch)
 
-    def augmentation_log_state(self) -> Dict[str, float]:
+    def augmentation_log_state(self) -> Dict[str, float | str]:
         if hasattr(self.transform, "log_state"):
             return self.transform.log_state()
         return {}
@@ -103,7 +103,7 @@ class TamperDataset(Dataset):
         with Image.open(sample.image_path) as img:
             image = img.convert("RGB")
         with Image.open(sample.mask_path) as m:
-            mask = m.convert("L").point(lambda p: 255 if p > 0 else 0)
+            mask = m.convert("L")
 
         image_t, mask_t, valid_t = self.transform(image, mask, rng)
         image_level_label = int(mask_t.sum().item() > 0)

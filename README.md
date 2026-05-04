@@ -139,10 +139,23 @@ Then use the listed `best_checkpoint_path` for testing.
 By default the best checkpoint is selected by `val_best_score`:
 
 ```text
-0.5 * val_best_pixel_f1 + 0.3 * val_pixel_auc + 0.2 * val_boundary_f1
+0.4 * val_pixel_f1 + 0.3 * val_best_pixel_f1 + 0.2 * val_boundary_f1 + 0.1 * val_pixel_auc
 ```
 
-This is less tied to the fixed 0.5 threshold than `val_pixel_f1` alone.
+This keeps the fixed-threshold segmentation quality important while still considering threshold-swept F1, boundary quality, and AUC.
+
+Training configs use mixed crop by default. A sample is sometimes kept as a full padded image and sometimes cropped around a tamper region:
+
+```yaml
+data:
+  preprocess_mode: pad
+  pad_position: top_left
+  mask_threshold: 127
+  train_crop_mode: mixed
+  crop_prob: 0.5   # 512 stages; use 0.35 in the 768 stage
+```
+
+`preprocess_mode: pad` keeps the aspect ratio. Images larger than the target size are scaled down proportionally, then zero-padded. `pad_position: top_left` follows common IML preprocessing practice and returns a matching `valid_region`. `mask_threshold: 127` is applied adaptively, so both 0/255 masks and 0/1 masks are handled safely. Mixed crop preserves full-image distribution while retaining local detail for small tamper regions.
 
 ## Evaluate All Test Sets
 

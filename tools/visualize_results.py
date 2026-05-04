@@ -54,7 +54,7 @@ def main() -> None:
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model = load_model_from_checkpoint(config, args.ckpt, device)
     img_size = int(config.get("data", {}).get("img_size", 512))
-    transform = EvalTransform(img_size)
+    transform = EvalTransform(img_size, preprocess_config=config.get("data", {}))
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 

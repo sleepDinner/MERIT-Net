@@ -15,6 +15,8 @@ import numpy as np
 from PIL import Image
 from PIL import ImageFile
 
+from datasets.transforms import binarize_mask_array
+
 ImageFile.LOAD_TRUNCATED_IMAGES = True
 warnings.filterwarnings("ignore", message="Corrupt EXIF data.*")
 
@@ -181,10 +183,10 @@ def _open_image_size(path: Path) -> Tuple[int, int]:
         return img.size
 
 
-def _read_binary_mask(path: Path) -> np.ndarray:
+def _read_binary_mask(path: Path, mask_threshold: float = 127.0) -> np.ndarray:
     with Image.open(path) as mask:
         arr = np.array(mask.convert("L"))
-    return (arr > 0).astype(np.uint8)
+    return binarize_mask_array(arr, threshold=mask_threshold).astype(np.uint8)
 
 
 def _write_csv(path: Path, rows: Iterable[dict], fieldnames: List[str]) -> None:
@@ -238,6 +240,7 @@ def scan_dataset(
     auto_black_for_authentic: bool = True,
     log_fn: Optional[Callable[[str], None]] = None,
     progress_interval: int = 500,
+    mask_threshold: float = 127.0,
 ) -> Tuple[List[SampleRecord], List[SkippedRecord]]:
     root = Path(root)
     output_dir = ensure_dir(output_dir)
@@ -292,7 +295,7 @@ def scan_dataset(
             if image_size != mask_size:
                 skipped.append(SkippedRecord(str(image_path), str(mask_path), "image_mask_size_mismatch"))
                 continue
-            mask_arr = _read_binary_mask(mask_path)
+            mask_arr = _read_binary_mask(mask_path, mask_threshold=mask_threshold)
             label = int(mask_arr.any())
             family = family_meta.get(str(image_path), family_meta.get(image_path.name, -1))
             if family < 0:
@@ -405,6 +408,7 @@ def scan_and_split_from_config(config: dict, log_fn: Optional[Callable[[str], No
         output_dir=output_dir,
         log_fn=log_fn,
         progress_interval=int(data_cfg.get("scan_progress_interval", 500)),
+        mask_threshold=float(data_cfg.get("mask_threshold", 127.0)),
     )
     train_file, val_file = split_train_val(
         samples,
