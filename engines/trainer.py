@@ -69,6 +69,45 @@ def _save_info(path: Path, lines: Dict[str, str | int | float]) -> None:
     path.write_text("\n".join(f"{k}: {v}" for k, v in lines.items()) + "\n", encoding="utf-8")
 
 
+def _format_metric(value: object) -> str:
+    try:
+        metric = float(value)
+    except (TypeError, ValueError):
+        return "nan"
+    if not np.isfinite(metric):
+        return "nan"
+    return f"{metric:.6f}"
+
+
+def _checkpoint_metric_info(
+    prefix: str,
+    train_logs: Dict[str, float],
+    train_metric_logs: Dict[str, float],
+    val_logs: Dict[str, float],
+    monitor: str,
+) -> Dict[str, str]:
+    return {
+        f"{prefix}_monitor_name": monitor,
+        f"{prefix}_monitor_value": _format_metric(val_logs.get(monitor)),
+        f"{prefix}_train_loss_total": _format_metric(train_logs.get("loss_total")),
+        f"{prefix}_train_eval_loss_total": _format_metric(train_metric_logs.get("train_loss_total")),
+        f"{prefix}_train_eval_pixel_f1": _format_metric(train_metric_logs.get("train_pixel_f1")),
+        f"{prefix}_train_eval_pixel_auc": _format_metric(train_metric_logs.get("train_pixel_auc")),
+        f"{prefix}_val_loss_total": _format_metric(val_logs.get("val_loss_total")),
+        f"{prefix}_val_loss_final_seg": _format_metric(val_logs.get("val_loss_final_seg")),
+        f"{prefix}_val_loss_coarse_seg": _format_metric(val_logs.get("val_loss_coarse_seg")),
+        f"{prefix}_val_pixel_f1": _format_metric(val_logs.get("val_pixel_f1")),
+        f"{prefix}_val_best_pixel_f1": _format_metric(val_logs.get("val_best_pixel_f1")),
+        f"{prefix}_val_best_threshold": _format_metric(val_logs.get("val_best_threshold")),
+        f"{prefix}_val_pixel_auc": _format_metric(val_logs.get("val_pixel_auc")),
+        f"{prefix}_val_boundary_f1": _format_metric(val_logs.get("val_boundary_f1")),
+        f"{prefix}_val_image_auc": _format_metric(val_logs.get("val_image_auc")),
+        f"{prefix}_val_best_score": _format_metric(val_logs.get("val_best_score")),
+        f"{prefix}_val_best_score_raw": _format_metric(val_logs.get("val_best_score_raw", val_logs.get("val_best_score"))),
+        f"{prefix}_loss_guard_penalty": _format_metric(val_logs.get("val_loss_guard_penalty", 0.0)),
+    }
+
+
 def _finite_metric(value: object, default: float = 0.0) -> float:
     try:
         metric = float(value)
@@ -101,6 +140,117 @@ def _add_best_score(metrics: Dict[str, float], eval_cfg: Dict) -> None:
     metrics["val_best_score"] = float(score)
 
 
+def _apply_loss_guard(metrics: Dict[str, float], eval_cfg: Dict, best_loss_ref: float) -> float:
+    guard_cfg = eval_cfg.get("best_score", {}).get("loss_guard", {})
+    if not guard_cfg.get("enabled", False):
+        return best_loss_ref
+
+    loss_key = guard_cfg.get("loss_key", "val_loss_total")
+    current_loss = _finite_metric(metrics.get(loss_key), default=float("inf"))
+    if not np.isfinite(current_loss):
+        return best_loss_ref
+
+    best_loss_ref = min(best_loss_ref, current_loss)
+    denom = max(abs(best_loss_ref), 1e-6)
+    tolerance = float(guard_cfg.get("relative_tolerance", 0.15))
+    penalty_weight = float(guard_cfg.get("penalty_weight", 0.5))
+    relative_over = max(0.0, (current_loss - best_loss_ref) / denom - tolerance)
+    penalty = penalty_weight * relative_over
+
+    metrics["val_best_score_raw"] = _finite_metric(metrics.get("val_best_score"), default=0.0)
+    metrics["val_loss_guard_ref"] = float(best_loss_ref)
+    metrics["val_loss_guard_over"] = float(relative_over)
+    metrics["val_loss_guard_penalty"] = float(penalty)
+    metrics["val_best_score"] = float(metrics["val_best_score_raw"] - penalty)
+    return best_loss_ref
+
+
+def _is_improved(current: float, best: float, mode: str, min_delta: float = 0.0) -> bool:
+    if mode == "min":
+        return current < best - min_delta
+    return current > best + min_delta
+
+
+def _finite_history_values(history: list[Dict[str, float]], key: str, window: int | None = None) -> list[float]:
+    rows = history[-window:] if window is not None and window > 0 else history
+    values = []
+    for row in rows:
+        value = _finite_metric(row.get(key), default=float("nan"))
+        if np.isfinite(value):
+            values.append(value)
+    return values
+
+
+def _early_stop_reason(
+    history: list[Dict[str, float]],
+    monitor_cfg: Dict,
+    epoch: int,
+    no_improve: int,
+    best_metric: float,
+    mode: str,
+) -> str | None:
+    min_epochs = int(monitor_cfg.get("min_epochs", 0))
+    if epoch < min_epochs:
+        return None
+
+    patience = int(monitor_cfg.get("patience", 10))
+    if no_improve >= patience:
+        return f"monitor did not improve for {patience} epochs"
+
+    loss_patience = int(monitor_cfg.get("loss_patience", 0))
+    if loss_patience > 0 and no_improve >= loss_patience:
+        loss_key = str(monitor_cfg.get("loss_key", "val_loss_final_seg"))
+        recent_losses = _finite_history_values(history, loss_key, loss_patience)
+        all_losses = _finite_history_values(history, loss_key)
+        if len(recent_losses) >= loss_patience and all_losses:
+            best_loss = min(all_losses)
+            tolerance = float(monitor_cfg.get("loss_relative_tolerance", 0.25))
+            limit = best_loss * (1.0 + tolerance)
+            if all(loss > limit for loss in recent_losses):
+                recent_mean = float(np.mean(recent_losses))
+                return (
+                    f"{loss_key} stayed above best loss by more than "
+                    f"{tolerance:.1%} for {loss_patience} epochs "
+                    f"(recent_mean={recent_mean:.5f}, best={best_loss:.5f})"
+                )
+
+    score_drop_patience = int(monitor_cfg.get("score_drop_patience", 0))
+    if score_drop_patience > 0 and no_improve >= score_drop_patience and np.isfinite(best_metric):
+        monitor = str(monitor_cfg.get("monitor", "val_pixel_f1"))
+        recent_scores = _finite_history_values(history, monitor, score_drop_patience)
+        if len(recent_scores) >= score_drop_patience:
+            recent_mean = float(np.mean(recent_scores))
+            drop = float(monitor_cfg.get("score_drop_tolerance", 0.04))
+            if mode == "min":
+                dropped = recent_mean >= best_metric + drop
+            else:
+                dropped = recent_mean <= best_metric - drop
+            if dropped:
+                return (
+                    f"{monitor} stayed worse than best by more than {drop:.4f} "
+                    f"for {score_drop_patience} epochs "
+                    f"(recent_mean={recent_mean:.5f}, best={best_metric:.5f})"
+                )
+
+    auc_patience = int(monitor_cfg.get("auc_drop_patience", 0))
+    if auc_patience > 0:
+        auc_key = str(monitor_cfg.get("auc_key", "val_pixel_auc"))
+        recent_auc = _finite_history_values(history, auc_key, auc_patience)
+        all_auc = _finite_history_values(history, auc_key)
+        if len(recent_auc) >= auc_patience and all_auc:
+            best_auc = max(all_auc)
+            recent_mean = float(np.mean(recent_auc))
+            drop = float(monitor_cfg.get("auc_drop_tolerance", 0.06))
+            if recent_mean <= best_auc - drop and no_improve >= min(auc_patience, patience):
+                return (
+                    f"{auc_key} stayed below best by more than {drop:.4f} "
+                    f"for {auc_patience} epochs "
+                    f"(recent_mean={recent_mean:.5f}, best={best_auc:.5f})"
+                )
+
+    return None
+
+
 def save_checkpoint(
     ckpt_dir: Path,
     filename_template: str,
@@ -111,6 +261,7 @@ def save_checkpoint(
     scaler,
     best_metric: float,
     config: Dict,
+    loss_guard_best_loss: float | None = None,
 ) -> Path:
     ckpt_dir.mkdir(parents=True, exist_ok=True)
     raw_model = model.module if hasattr(model, "module") else model
@@ -124,6 +275,7 @@ def save_checkpoint(
             "scheduler_state_dict": scheduler.state_dict() if scheduler is not None else None,
             "scaler_state_dict": scaler.state_dict() if scaler is not None else None,
             "best_metric": best_metric,
+            "loss_guard_best_loss": loss_guard_best_loss,
             "config": config,
         },
         path,
@@ -347,8 +499,9 @@ def train(config: Dict, resume: str | None = None, pretrained: str | None = None
     monitor_cfg = config.get("train", {}).get("early_stopping", {})
     monitor = monitor_cfg.get("monitor", "val_pixel_f1")
     mode = monitor_cfg.get("mode", "max")
-    patience = int(monitor_cfg.get("patience", 10))
+    min_delta = float(monitor_cfg.get("min_delta", 0.0))
     best_metric = -float("inf") if mode == "max" else float("inf")
+    loss_guard_best_loss = float("inf")
     start_epoch = 1
 
     resume_path = _resolve_resume_path(output_dir, resume, latest_info_name)
@@ -358,6 +511,7 @@ def train(config: Dict, resume: str | None = None, pretrained: str | None = None
         ckpt = _load_checkpoint(resume_path, model, optimizer, scheduler, scaler, map_location=device)
         start_epoch = int(ckpt["epoch"]) + 1
         best_metric = float(ckpt.get("best_metric", best_metric))
+        loss_guard_best_loss = float(ckpt.get("loss_guard_best_loss", loss_guard_best_loss))
         logger.info(f"Resumed from {resume_path} at epoch {start_epoch}.")
 
     metric_logger = CSVMetricLogger(output_dir / "metrics.csv")
@@ -367,11 +521,12 @@ def train(config: Dict, resume: str | None = None, pretrained: str | None = None
     train_eval_interval = max(1, int(train_cfg.get("train_eval_interval", 1)))
     train_eval_first_epoch = bool(train_cfg.get("train_eval_first_epoch", True))
     no_improve = 0
+    val_history: list[Dict[str, float]] = []
 
     for epoch in range(start_epoch, epochs + 1):
         if train_sampler is not None:
             train_sampler.set_epoch(epoch)
-        train_dataset.set_epoch(epoch)
+        train_dataset.set_epoch(epoch, total_epochs=epochs)
         if is_rank0():
             logger.info(f"Epoch {epoch}/{epochs} started.")
             logger.info(f"Epoch {epoch}/{epochs} augmentation: {train_dataset.augmentation_log_state()}")
@@ -425,10 +580,12 @@ def train(config: Dict, resume: str | None = None, pretrained: str | None = None
             log_interval=log_interval,
         )
         _add_best_score(val_logs, config.get("eval", {}))
+        loss_guard_best_loss = _apply_loss_guard(val_logs, config.get("eval", {}), loss_guard_best_loss)
         scheduler.step()
+        val_history.append({"epoch": float(epoch), **val_logs})
 
         current_metric = _finite_metric(val_logs.get(monitor), default=-float("inf") if mode == "max" else float("inf"))
-        improved = (current_metric > best_metric) if mode == "max" else (current_metric < best_metric)
+        improved = _is_improved(current_metric, best_metric, mode, min_delta=min_delta)
         if improved:
             best_metric = current_metric
             no_improve = 0
@@ -446,6 +603,7 @@ def train(config: Dict, resume: str | None = None, pretrained: str | None = None
                 scaler,
                 best_metric,
                 config,
+                loss_guard_best_loss=loss_guard_best_loss,
             )
             _save_info(
                 ckpt_dir / latest_info_name,
@@ -453,19 +611,23 @@ def train(config: Dict, resume: str | None = None, pretrained: str | None = None
                     "latest_epoch": epoch,
                     "latest_checkpoint_file": ckpt_path.name,
                     "latest_checkpoint_path": str(ckpt_path),
+                    **_checkpoint_metric_info("latest", train_logs, train_metric_logs, val_logs, monitor),
                 },
             )
             if improved:
-                _save_info(
-                    ckpt_dir / best_info_name,
-                    {
-                        "best_epoch": epoch,
-                        "best_metric_name": monitor,
-                        "best_metric_value": f"{best_metric:.6f}",
-                        "best_checkpoint_file": ckpt_path.name,
-                        "best_checkpoint_path": str(ckpt_path),
-                    },
-                )
+                best_info = {
+                    "best_epoch": epoch,
+                    "best_metric_name": monitor,
+                    "best_metric_value": f"{best_metric:.6f}",
+                    "best_checkpoint_file": ckpt_path.name,
+                    "best_checkpoint_path": str(ckpt_path),
+                    **_checkpoint_metric_info("best", train_logs, train_metric_logs, val_logs, monitor),
+                }
+                if "val_best_score_raw" in val_logs:
+                    best_info["best_score_raw"] = f"{val_logs.get('val_best_score_raw', float('nan')):.6f}"
+                    best_info["loss_guard_best_loss"] = f"{val_logs.get('val_loss_guard_ref', float('nan')):.6f}"
+                    best_info["loss_guard_penalty"] = f"{val_logs.get('val_loss_guard_penalty', float('nan')):.6f}"
+                _save_info(ckpt_dir / best_info_name, best_info)
             row = {
                 "epoch": epoch,
                 "lr": optimizer.param_groups[0]["lr"],
@@ -505,13 +667,22 @@ def train(config: Dict, resume: str | None = None, pretrained: str | None = None
                 f"val_pixel_auc={val_logs.get('val_pixel_auc', float('nan')):.5f} "
                 f"val_boundary_f1={val_logs.get('val_boundary_f1', float('nan')):.5f} "
                 f"val_best_score={val_logs.get('val_best_score', float('nan')):.5f} "
+                f"loss_guard_penalty={val_logs.get('val_loss_guard_penalty', 0.0):.5f} "
                 f"val_image_auc={val_logs.get('val_image_auc', float('nan')):.5f} "
                 f"best_{monitor}={best_metric:.5f} ckpt={ckpt_path}"
             )
 
+        stop_reason = _early_stop_reason(
+            val_history,
+            monitor_cfg,
+            epoch=epoch,
+            no_improve=no_improve,
+            best_metric=best_metric,
+            mode=mode,
+        )
         if distributed:
             distributed_barrier(local_rank)
-        if no_improve >= patience:
+        if stop_reason:
             if is_rank0():
-                logger.info(f"Early stopping triggered after {patience} epochs without improvement.")
+                logger.info(f"Early stopping triggered: {stop_reason}.")
             break

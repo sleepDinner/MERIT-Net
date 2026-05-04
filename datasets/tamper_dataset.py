@@ -84,10 +84,13 @@ class TamperDataset(Dataset):
         else:
             self.transform = EvalTransform(img_size, preprocess_config=crop_config or {})
 
-    def set_epoch(self, epoch: int) -> None:
+    def set_epoch(self, epoch: int, total_epochs: int | None = None) -> None:
         self.epoch = int(epoch)
         if hasattr(self.transform, "set_epoch"):
-            self.transform.set_epoch(epoch)
+            try:
+                self.transform.set_epoch(epoch, total_epochs=total_epochs)
+            except TypeError:
+                self.transform.set_epoch(epoch)
 
     def augmentation_log_state(self) -> Dict[str, float | str]:
         if hasattr(self.transform, "log_state"):

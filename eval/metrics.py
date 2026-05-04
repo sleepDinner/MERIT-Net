@@ -26,6 +26,13 @@ def _edge_np(mask: np.ndarray) -> np.ndarray:
     return ((dil - ero).squeeze().numpy() > 0.5).astype(np.uint8)
 
 
+def _safe_valid_np(valid: np.ndarray, kernel_size: int = 5) -> np.ndarray:
+    t = torch.from_numpy(valid.astype(np.float32))[None, None]
+    unsafe = F.max_pool2d(1.0 - t, kernel_size, stride=1, padding=kernel_size // 2)
+    safe = (unsafe.squeeze().numpy() <= 0.0)
+    return safe if safe.any() else valid.astype(bool)
+
+
 class MetricAccumulator:
     def __init__(self, threshold: float = 0.5, max_pixel_auc_samples: int = 2_000_000):
         self.threshold = float(threshold)
@@ -128,10 +135,11 @@ class MetricAccumulator:
             full_prob = mask_prob[b, 0].numpy()
             full_gt = (gt_mask[b, 0].numpy() > 0.5).astype(np.uint8)
             full_valid = (valid_region[b, 0].numpy() > 0.5)
-            edge_gt = _edge_np(full_gt) & full_valid
-            edge_pred = _edge_np((full_prob >= self.threshold).astype(np.uint8)) & full_valid
+            edge_valid = _safe_valid_np(full_valid)
+            edge_gt = _edge_np(full_gt) & edge_valid
+            edge_pred = _edge_np((full_prob >= self.threshold).astype(np.uint8)) & edge_valid
             self.boundary_tp += int((edge_pred & edge_gt).sum())
-            self.boundary_fp += int((edge_pred & ~edge_gt & full_valid).sum())
+            self.boundary_fp += int((edge_pred & ~edge_gt & edge_valid).sum())
             self.boundary_fn += int((~edge_pred & edge_gt).sum())
 
             gt_area_ratio = float(gt.mean())

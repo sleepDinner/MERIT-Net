@@ -144,6 +144,18 @@ By default the best checkpoint is selected by `val_best_score`:
 
 This keeps the fixed-threshold segmentation quality important while still considering threshold-swept F1, boundary quality, and AUC.
 
+The score also has a validation-loss guard:
+
+```yaml
+loss_guard:
+  enabled: true
+  loss_key: val_loss_total
+  relative_tolerance: 0.15
+  penalty_weight: 0.5
+```
+
+If the validation loss is more than 15% worse than the best validation loss seen in that stage, the best score is penalized. This keeps loss from becoming the main selection target, but reduces the chance of selecting an overfit checkpoint.
+
 Training configs use mixed crop by default. A sample is sometimes kept as a full padded image and sometimes cropped around a tamper region:
 
 ```yaml
@@ -156,6 +168,20 @@ data:
 ```
 
 `preprocess_mode: pad` keeps the aspect ratio. Images larger than the target size are scaled down proportionally, then zero-padded. `pad_position: top_left` follows common IML preprocessing practice and returns a matching `valid_region`. `mask_threshold: 127` is applied adaptively, so both 0/255 masks and 0/1 masks are handled safely. Mixed crop preserves full-image distribution while retaining local detail for small tamper regions.
+
+Training augmentation uses a phased progressive schedule. The default thresholds are based on total epoch ratios rather than fixed epoch numbers:
+
+```yaml
+augmentation_schedule:
+  enabled: true
+  mode: phased
+  warmup_ratio: 0.15
+  robust_start_ratio: 0.50
+  warmup_epochs: 10           # fallback if total epochs are unavailable
+  strong_aug_start_epoch: 40  # fallback if total epochs are unavailable
+```
+
+Warmup keeps degradations very light so the model first learns tamper regions and residual traces. Middle training introduces mild JPEG, blur, noise, downscale and color shifts. Robust training uses a total `degradation_prob` around 0.35 to randomly apply only one or two degradations, so most images remain original or lightly augmented instead of stacking every degradation at once.
 
 ## Evaluate All Test Sets
 

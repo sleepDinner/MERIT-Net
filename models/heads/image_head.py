@@ -34,7 +34,6 @@ class ImageLevelHead(nn.Module):
 
         features = []
         bsz = mask_prob.shape[0]
-        eps = 1e-6
         for b in range(bsz):
             valid = valid_region[b, 0] > 0.5
             values = mask_prob[b, 0][valid]
@@ -42,7 +41,7 @@ class ImageLevelHead(nn.Module):
             if values.numel() == 0:
                 features.append(mask_prob.new_zeros(4))
                 continue
-            mean_conf = (values * conf).sum() / (conf.sum() + eps)
+            mean_conf = (values * conf).mean()
             max_val = values.max()
             k = max(1, int(values.numel() * self.topk_ratio))
             topk_mean = torch.topk(values, k=k, largest=True).values.mean()

@@ -24,4 +24,8 @@ class EdgeLoss(nn.Module):
         if valid_region is None:
             return loss.mean()
         valid_region = valid_region.float()
-        return (loss * valid_region).sum() / valid_region.sum().clamp_min(1.0)
+        safe_valid = 1.0 - F.max_pool2d(1.0 - valid_region, kernel_size=self.kernel_size, stride=1, padding=self.kernel_size // 2)
+        safe_valid = safe_valid.clamp(0.0, 1.0)
+        if safe_valid.sum() < 1:
+            safe_valid = valid_region
+        return (loss * safe_valid).sum() / safe_valid.sum().clamp_min(1.0)
