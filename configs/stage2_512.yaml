@@ -1,5 +1,5 @@
 seed: 42
-output_dir: outputs/merit_net_s_512_stage2
+output_dir: outputs/merit_net_s_512_stage2_pvt
 
 data:
   train_root: /data0/lzb-change-vmunet/FinalTrainData/
@@ -26,6 +26,7 @@ model:
   img_size: 512
   global_backbone: pvt_v2_b1
   global_pretrained: true
+  allow_global_fallback: false
   local_backbone: light_resnet18
   srm_trainable: true
   decoder_embed_dim: 256
@@ -42,7 +43,7 @@ model:
   gradient_checkpointing: true
 
 train:
-  epochs: 30
+  epochs: 12
   batch_size_per_gpu: 32
   accumulate_grad_batches: 1
   compute_train_metrics: false
@@ -62,8 +63,8 @@ train:
   early_stopping:
     monitor: val_best_score
     mode: max
-    patience: 8
-    min_epochs: 8
+    patience: 5
+    min_epochs: 5
     min_delta: 0.001
     loss_key: val_loss_final_seg
     loss_patience: 4
@@ -94,9 +95,9 @@ loss:
   tversky_alpha: 0.3
   tversky_beta: 0.7
   edge: 0.2
-  confidence: 0.2
-  confidence_warmup_epochs: 0
-  image: 0.3
+  confidence: 0.08
+  confidence_warmup_epochs: 3
+  image: 0.08
   family: 0.0
 
 augmentation:
@@ -156,26 +157,29 @@ augmentation_schedule:
     copy_move_prob: 0.06
     inpainting_prob: 0.06
   robust:
-    degradation_prob: 0.38
+    degradation_prob: 0.30
     max_degradations: 2
-    jpeg_prob: 0.30
+    jpeg_prob: 0.25
     jpeg_quality: [50, 95]
-    blur_prob: 0.15
+    blur_prob: 0.10
     blur_radius: [0.2, 1.5]
-    noise_prob: 0.15
-    noise_sigma: [0, 8]
-    downscale_prob: 0.15
-    downscale_scale: [0.70, 0.95]
+    noise_prob: 0.10
+    noise_sigma: [0, 6]
+    downscale_prob: 0.10
+    downscale_scale: [0.75, 0.96]
     color_jitter_prob: 0.20
     color_jitter_strength: 0.12
     scale_prob: 0.12
     scale_range: [0.90, 1.10]
-    copy_move_prob: 0.12
-    inpainting_prob: 0.12
+    copy_move_prob: 0.05
+    inpainting_prob: 0.05
 
 eval:
   threshold: 0.5
   batch_size_per_gpu: 64
+  max_pixel_auc_samples: 2000000
+  pixel_auc_samples_per_image: 4096
+  pixel_auc_seed: 42
   save_predictions: true
   best_score:
     weights:

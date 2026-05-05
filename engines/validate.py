@@ -26,9 +26,17 @@ def validate(
     logger=None,
     log_interval: int = 20,
     max_batches: int | None = None,
+    max_pixel_auc_samples: int = 2_000_000,
+    pixel_auc_samples_per_image: int = 4096,
+    pixel_auc_seed: int = 12345,
 ) -> Dict[str, float]:
     model.eval()
-    accumulator = MetricAccumulator(threshold=threshold)
+    accumulator = MetricAccumulator(
+        threshold=threshold,
+        max_pixel_auc_samples=max_pixel_auc_samples,
+        pixel_auc_samples_per_image=pixel_auc_samples_per_image,
+        pixel_auc_seed=pixel_auc_seed,
+    )
     loss_logs = defaultdict(float)
     count = 0
     import time

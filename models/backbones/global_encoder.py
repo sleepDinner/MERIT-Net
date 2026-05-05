@@ -44,12 +44,23 @@ class GlobalEncoder(nn.Module):
         backbone_name: str = "pvt_v2_b1",
         pretrained: bool = True,
         gradient_checkpointing: bool = False,
+        allow_fallback: bool = False,
     ):
         super().__init__()
         self.backbone_name = backbone_name
+        self.pretrained = pretrained
+        self.allow_fallback = allow_fallback
         self.uses_timm = False
+        self.fallback_reason = ""
         self.model: nn.Module
         self.channels: List[int]
+
+        if backbone_name.lower() in {"fallback", "fallback_cnn", "small_cnn"}:
+            self.model = FallbackGlobalEncoder()
+            self.channels = self.model.channels
+            self.uses_timm = False
+            self.fallback_reason = "explicit fallback backbone requested"
+            return
 
         try:
             import timm
@@ -65,10 +76,29 @@ class GlobalEncoder(nn.Module):
             if gradient_checkpointing and hasattr(self.model, "set_grad_checkpointing"):
                 self.model.set_grad_checkpointing(True)
         except Exception as exc:
+            if not allow_fallback:
+                raise RuntimeError(
+                    "Failed to initialize the requested global backbone "
+                    f"'{backbone_name}' with pretrained={pretrained}. Install timm and make sure "
+                    "the pretrained weights are available, or set model.allow_global_fallback=true "
+                    "or model.global_backbone=fallback_cnn explicitly if you really want the small CNN fallback. "
+                    f"Original error: {type(exc).__name__}: {exc}"
+                ) from exc
             self.model = FallbackGlobalEncoder()
             self.channels = self.model.channels
             self.uses_timm = False
             self.fallback_reason = str(exc)
+
+    def summary(self) -> str:
+        if self.uses_timm:
+            return (
+                f"GlobalEncoder: uses_timm=True backbone={self.backbone_name} "
+                f"pretrained={self.pretrained} channels={self.channels}"
+            )
+        return (
+            f"GlobalEncoder: uses_timm=False backbone=fallback_cnn "
+            f"channels={self.channels} reason={self.fallback_reason}"
+        )
 
     def forward(self, x: torch.Tensor) -> List[torch.Tensor]:
         feats = self.model(x)

@@ -34,9 +34,22 @@ def _safe_valid_np(valid: np.ndarray, kernel_size: int = 5) -> np.ndarray:
 
 
 class MetricAccumulator:
-    def __init__(self, threshold: float = 0.5, max_pixel_auc_samples: int = 2_000_000):
+    def __init__(
+        self,
+        threshold: float = 0.5,
+        max_pixel_auc_samples: int = 2_000_000,
+        pixel_auc_samples_per_image: int = 4096,
+        pixel_auc_seed: int = 12345,
+    ):
         self.threshold = float(threshold)
         self.max_pixel_auc_samples = int(max_pixel_auc_samples)
+        self.pixel_auc_samples_per_image = int(pixel_auc_samples_per_image)
+        self.pixel_auc_seed = int(pixel_auc_seed)
+        self._pixel_auc_rng = np.random.default_rng(self.pixel_auc_seed)
+        self._pixel_auc_count = 0
+        self._pixel_auc_seen = 0
+        self._pixel_scores_buf = None
+        self._pixel_labels_buf = None
         self.sweep_thresholds = [
             0.0001,
             0.0005,
@@ -83,6 +96,57 @@ class MetricAccumulator:
         self.pixel_scores: List[np.ndarray] = []
         self.pixel_labels: List[np.ndarray] = []
 
+    def _ensure_pixel_auc_buffers(self) -> None:
+        if self.max_pixel_auc_samples <= 0 or self._pixel_scores_buf is not None:
+            return
+        self._pixel_scores_buf = np.empty(self.max_pixel_auc_samples, dtype=np.float32)
+        self._pixel_labels_buf = np.empty(self.max_pixel_auc_samples, dtype=np.uint8)
+
+    def _add_pixel_auc_samples(self, prob: np.ndarray, gt: np.ndarray) -> None:
+        if self.max_pixel_auc_samples <= 0 or prob.size == 0:
+            return
+        sample_limit = max(1, self.pixel_auc_samples_per_image)
+        sample_count = min(prob.size, sample_limit)
+        if prob.size > sample_count:
+            idx = self._pixel_auc_rng.choice(prob.size, size=sample_count, replace=False)
+            scores = prob[idx].astype(np.float32, copy=False)
+            labels = gt[idx].astype(np.uint8, copy=False)
+        else:
+            scores = prob.astype(np.float32, copy=False)
+            labels = gt.astype(np.uint8, copy=False)
+        self._add_pixel_auc_candidates(scores, labels)
+
+    def _add_pixel_auc_candidates(self, scores: np.ndarray, labels: np.ndarray) -> None:
+        if self.max_pixel_auc_samples <= 0 or scores.size == 0:
+            return
+        self._ensure_pixel_auc_buffers()
+        if self._pixel_scores_buf is None or self._pixel_labels_buf is None:
+            return
+
+        n = int(scores.size)
+        if self._pixel_auc_count < self.max_pixel_auc_samples:
+            take = min(n, self.max_pixel_auc_samples - self._pixel_auc_count)
+            start = self._pixel_auc_count
+            end = start + take
+            self._pixel_scores_buf[start:end] = scores[:take]
+            self._pixel_labels_buf[start:end] = labels[:take]
+            self._pixel_auc_count = end
+            self._pixel_auc_seen += take
+            scores = scores[take:]
+            labels = labels[take:]
+            n -= take
+        if n <= 0:
+            return
+
+        stream_high = np.arange(self._pixel_auc_seen + 1, self._pixel_auc_seen + n + 1, dtype=np.int64)
+        replace_pos = self._pixel_auc_rng.integers(0, stream_high)
+        keep = replace_pos < self.max_pixel_auc_samples
+        if keep.any():
+            pos = replace_pos[keep]
+            self._pixel_scores_buf[pos] = scores[keep]
+            self._pixel_labels_buf[pos] = labels[keep]
+        self._pixel_auc_seen += n
+
     def update(
         self,
         mask_prob: torch.Tensor,
@@ -120,17 +184,7 @@ class MetricAccumulator:
                 stat["fp"] += int((sweep_pred & negatives).sum())
                 stat["fn"] += int((~sweep_pred & positives).sum())
 
-            if sum(x.size for x in self.pixel_scores) < self.max_pixel_auc_samples:
-                remaining = self.max_pixel_auc_samples - sum(x.size for x in self.pixel_scores)
-                if prob.size > remaining:
-                    idx = np.linspace(0, prob.size - 1, remaining).astype(np.int64)
-                    prob_store = prob[idx]
-                    gt_store = gt[idx]
-                else:
-                    prob_store = prob
-                    gt_store = gt
-                self.pixel_scores.append(prob_store.astype(np.float32))
-                self.pixel_labels.append(gt_store.astype(np.uint8))
+            self._add_pixel_auc_samples(prob, gt)
 
             full_prob = mask_prob[b, 0].numpy()
             full_gt = (gt_mask[b, 0].numpy() > 0.5).astype(np.uint8)
@@ -177,8 +231,11 @@ class MetricAccumulator:
             setattr(self, attr, getattr(self, attr) + getattr(other, attr))
         self.image_scores.extend(other.image_scores)
         self.image_labels.extend(other.image_labels)
-        self.pixel_scores.extend(other.pixel_scores)
-        self.pixel_labels.extend(other.pixel_labels)
+        if other._pixel_auc_count > 0 and other._pixel_scores_buf is not None and other._pixel_labels_buf is not None:
+            self._add_pixel_auc_candidates(
+                other._pixel_scores_buf[: other._pixel_auc_count],
+                other._pixel_labels_buf[: other._pixel_auc_count],
+            )
         for key, stat in other.sweep_stats.items():
             if key not in self.sweep_stats:
                 self.sweep_stats[key] = {"tp": 0, "fp": 0, "fn": 0}
@@ -187,12 +244,24 @@ class MetricAccumulator:
             self.sweep_stats[key]["fn"] += int(stat["fn"])
 
     def state_dict(self) -> Dict:
-        return self.__dict__.copy()
+        state = self.__dict__.copy()
+        state["_pixel_auc_rng_state"] = self._pixel_auc_rng.bit_generator.state
+        state.pop("_pixel_auc_rng", None)
+        return state
 
     @classmethod
     def from_state_dict(cls, state: Dict) -> "MetricAccumulator":
-        obj = cls(threshold=state.get("threshold", 0.5), max_pixel_auc_samples=state.get("max_pixel_auc_samples", 2_000_000))
+        obj = cls(
+            threshold=state.get("threshold", 0.5),
+            max_pixel_auc_samples=state.get("max_pixel_auc_samples", 2_000_000),
+            pixel_auc_samples_per_image=state.get("pixel_auc_samples_per_image", 4096),
+            pixel_auc_seed=state.get("pixel_auc_seed", 12345),
+        )
+        rng_state = state.pop("_pixel_auc_rng_state", None)
         obj.__dict__.update(state)
+        obj._pixel_auc_rng = np.random.default_rng(obj.pixel_auc_seed)
+        if rng_state is not None:
+            obj._pixel_auc_rng.bit_generator.state = rng_state
         return obj
 
     @staticmethod
@@ -244,9 +313,16 @@ class MetricAccumulator:
         small_f1 = self._f1(self.small_tp, self.small_fp, self.small_fn)
         boundary_f1 = self._f1(self.boundary_tp, self.boundary_fp, self.boundary_fn)
 
-        if self.pixel_scores:
+        if self._pixel_auc_count > 0 and self._pixel_scores_buf is not None and self._pixel_labels_buf is not None:
+            pixel_scores = self._pixel_scores_buf[: self._pixel_auc_count]
+            pixel_labels = self._pixel_labels_buf[: self._pixel_auc_count]
+        elif self.pixel_scores:
             pixel_scores = np.concatenate(self.pixel_scores)
             pixel_labels = np.concatenate(self.pixel_labels)
+        else:
+            pixel_scores = None
+            pixel_labels = None
+        if pixel_scores is not None and pixel_labels is not None:
             pixel_auc = _safe_auc(pixel_labels, pixel_scores)
         else:
             pixel_auc = float("nan")

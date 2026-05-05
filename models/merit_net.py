@@ -63,6 +63,7 @@ class MERITNet(nn.Module):
                 backbone_name=cfg.get("global_backbone", "pvt_v2_b1"),
                 pretrained=bool(cfg.get("global_pretrained", True)),
                 gradient_checkpointing=self.gradient_checkpointing,
+                allow_fallback=bool(cfg.get("allow_global_fallback", False)),
             )
             global_channels = self.global_encoder.channels
         else:
@@ -157,3 +158,8 @@ class MERITNet(nn.Module):
         if self.fusion is None:
             return {}
         return self.fusion.gate_statistics()
+
+    def encoder_summary(self) -> Dict[str, str]:
+        if self.global_encoder is None:
+            return {"global_encoder": "disabled"}
+        return {"global_encoder": self.global_encoder.summary()}

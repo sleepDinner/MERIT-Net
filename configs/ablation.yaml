@@ -24,6 +24,7 @@ model:
   img_size: 512
   global_backbone: pvt_v2_b1
   global_pretrained: true
+  allow_global_fallback: false
   local_backbone: light_resnet18
   srm_trainable: true
   decoder_embed_dim: 256
@@ -172,6 +173,9 @@ augmentation_schedule:
 eval:
   threshold: 0.5
   batch_size_per_gpu: 8
+  max_pixel_auc_samples: 2000000
+  pixel_auc_samples_per_image: 4096
+  pixel_auc_seed: 42
   save_predictions: true
   best_score:
     weights:

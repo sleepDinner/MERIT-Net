@@ -461,6 +461,9 @@ def train(config: Dict, resume: str | None = None, pretrained: str | None = None
     )
 
     model = MERITNet(config.get("model", {})).to(device)
+    if is_rank0():
+        for summary in model.encoder_summary().values():
+            logger.info(summary)
     if distributed:
         model = DistributedDataParallel(
             model,
@@ -512,7 +515,11 @@ def train(config: Dict, resume: str | None = None, pretrained: str | None = None
 
     metric_logger = CSVMetricLogger(output_dir / "metrics.csv")
     epochs = int(train_cfg.get("epochs", 80))
-    threshold = float(config.get("eval", {}).get("threshold", 0.5))
+    eval_cfg = config.get("eval", {})
+    threshold = float(eval_cfg.get("threshold", 0.5))
+    max_pixel_auc_samples = int(eval_cfg.get("max_pixel_auc_samples", 2_000_000))
+    pixel_auc_samples_per_image = int(eval_cfg.get("pixel_auc_samples_per_image", 4096))
+    pixel_auc_seed = int(eval_cfg.get("pixel_auc_seed", config.get("seed", 42)))
     log_interval = int(train_cfg.get("log_interval", 20))
     train_eval_interval = max(1, int(train_cfg.get("train_eval_interval", 1)))
     train_eval_first_epoch = bool(train_cfg.get("train_eval_first_epoch", True))
@@ -561,6 +568,9 @@ def train(config: Dict, resume: str | None = None, pretrained: str | None = None
                 logger=logger if is_rank0() else None,
                 log_interval=log_interval,
                 max_batches=train_eval_max_batches,
+                max_pixel_auc_samples=max_pixel_auc_samples,
+                pixel_auc_samples_per_image=pixel_auc_samples_per_image,
+                pixel_auc_seed=pixel_auc_seed,
             )
         val_logs = validate(
             model,
@@ -574,6 +584,9 @@ def train(config: Dict, resume: str | None = None, pretrained: str | None = None
             prefix="val",
             logger=logger if is_rank0() else None,
             log_interval=log_interval,
+            max_pixel_auc_samples=max_pixel_auc_samples,
+            pixel_auc_samples_per_image=pixel_auc_samples_per_image,
+            pixel_auc_seed=pixel_auc_seed,
         )
         _add_best_score(val_logs, config.get("eval", {}))
         loss_guard_best_loss = _apply_loss_guard(val_logs, config.get("eval", {}), loss_guard_best_loss)

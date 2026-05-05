@@ -50,7 +50,13 @@ def evaluate_split(
         crop_config=config.get("data", {}),
     )
     loader = DataLoader(dataset, batch_size=batch_size, shuffle=False, num_workers=num_workers, pin_memory=True)
-    acc = MetricAccumulator(threshold=float(config.get("eval", {}).get("threshold", 0.5)))
+    eval_cfg = config.get("eval", {})
+    acc = MetricAccumulator(
+        threshold=float(eval_cfg.get("threshold", 0.5)),
+        max_pixel_auc_samples=int(eval_cfg.get("max_pixel_auc_samples", 2_000_000)),
+        pixel_auc_samples_per_image=int(eval_cfg.get("pixel_auc_samples_per_image", 4096)),
+        pixel_auc_seed=int(eval_cfg.get("pixel_auc_seed", config.get("seed", 42))),
+    )
     per_image_rows = []
     progress = ProgressLine() if show_progress else None
     start_time = time.perf_counter()

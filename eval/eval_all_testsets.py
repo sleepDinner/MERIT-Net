@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import csv
 import sys
+from datetime import datetime
 from pathlib import Path
 
 import yaml
@@ -86,13 +87,20 @@ def main() -> None:
         writer.writeheader()
         writer.writerows(all_skipped)
 
-    summary_csv = output_root / "test_results_summary.csv"
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    summary_csv = output_root / f"test_results_summary_{timestamp}.csv"
     fieldnames = sorted({key for row in summary_rows for key in row.keys()})
     with summary_csv.open("w", encoding="utf-8", newline="") as f:
         writer = csv.DictWriter(f, fieldnames=fieldnames)
         writer.writeheader()
         writer.writerows(summary_rows)
+    latest_csv = output_root / "test_results_summary_latest.csv"
+    with latest_csv.open("w", encoding="utf-8", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=fieldnames)
+        writer.writeheader()
+        writer.writerows(summary_rows)
     print(f"summary: {summary_csv}")
+    print(f"summary_latest: {latest_csv}")
 
 
 if __name__ == "__main__":
