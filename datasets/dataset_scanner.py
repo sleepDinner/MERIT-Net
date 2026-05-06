@@ -752,6 +752,13 @@ def split_train_val(
 ) -> Tuple[Path, Path]:
     rng = random.Random(seed)
     split_strategy = str(split_strategy or "random").lower()
+    source_group_count = len(
+        {
+            _sample_source_group(sample, train_root, source_group_depth, source_group_ignore_dirs)
+            for sample in samples
+        }
+    )
+    require_source_disjoint = split_strategy == "source_aware" and source_group_count >= 2
     if split_strategy == "source_aware":
         train, val = _source_aware_split(
             samples,
@@ -789,6 +796,8 @@ def split_train_val(
         "balance_pos_neg": bool(balance_pos_neg),
         "source_group_depth": int(source_group_depth),
         "min_val_groups": int(min_val_groups),
+        "source_group_count": int(source_group_count),
+        "source_disjoint_required": bool(require_source_disjoint),
         "train_root": str(train_root or ""),
         "num_input_samples": len(samples),
     }
@@ -802,7 +811,7 @@ def split_train_val(
             source_group_ignore_dirs=source_group_ignore_dirs,
             mask_threshold=mask_threshold,
             strict=strict_pair_audit,
-            require_source_disjoint=split_strategy == "source_aware",
+            require_source_disjoint=require_source_disjoint,
             summary=summary,
             log_fn=log_fn,
         )

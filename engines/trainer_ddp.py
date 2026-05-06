@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+from datetime import timedelta
 from typing import Tuple
 
 import torch
@@ -13,18 +14,21 @@ def init_distributed(config: dict) -> Tuple[bool, int, int, int]:
     local_rank = int(os.environ.get("LOCAL_RANK", "0"))
     distributed = world_size > 1
     if distributed and not dist.is_initialized():
-        backend = config.get("ddp", {}).get("backend", "nccl")
+        ddp_cfg = config.get("ddp", {})
+        backend = ddp_cfg.get("backend", "nccl")
+        timeout_minutes = int(ddp_cfg.get("timeout_minutes", 180))
         if not torch.cuda.is_available():
             backend = "gloo"
-        dist.init_process_group(backend=backend, init_method="env://")
+        dist.init_process_group(backend=backend, init_method="env://", timeout=timedelta(minutes=timeout_minutes))
         if torch.cuda.is_available():
             torch.cuda.set_device(local_rank)
     return distributed, rank, local_rank, world_size
 
 
-def cleanup_distributed() -> None:
+def cleanup_distributed(barrier: bool = False) -> None:
     if dist.is_available() and dist.is_initialized():
-        distributed_barrier()
+        if barrier:
+            distributed_barrier()
         dist.destroy_process_group()
 
 

@@ -221,4 +221,5 @@ eval:
 
 ddp:
   backend: nccl
+  timeout_minutes: 180
   find_unused_parameters: false
