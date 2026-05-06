@@ -7,9 +7,17 @@ import torch.nn.functional as F
 from losses.dice_loss import DiceLoss, TverskyLoss
 
 
-def masked_bce_with_logits(logits: torch.Tensor, target: torch.Tensor, valid_region: torch.Tensor | None = None) -> torch.Tensor:
+def masked_bce_with_logits(
+    logits: torch.Tensor,
+    target: torch.Tensor,
+    valid_region: torch.Tensor | None = None,
+    positive_weight: float = 1.0,
+) -> torch.Tensor:
     target = target.float()
     loss = F.binary_cross_entropy_with_logits(logits, target, reduction="none")
+    if positive_weight != 1.0:
+        pixel_weight = 1.0 + (float(positive_weight) - 1.0) * target
+        loss = loss * pixel_weight
     if valid_region is None:
         return loss.mean()
     valid_region = valid_region.float()
@@ -27,6 +35,7 @@ class SegmentationLoss(nn.Module):
         focal_gamma: float = 2.0,
         tversky_alpha: float = 0.3,
         tversky_beta: float = 0.7,
+        bce_positive_weight: float = 1.0,
     ):
         super().__init__()
         self.bce_weight = float(bce_weight)
@@ -35,6 +44,7 @@ class SegmentationLoss(nn.Module):
         self.tversky_weight = float(tversky_weight)
         self.focal_alpha = float(focal_alpha)
         self.focal_gamma = float(focal_gamma)
+        self.bce_positive_weight = float(bce_positive_weight)
         self.dice = DiceLoss()
         self.tversky = TverskyLoss(alpha=tversky_alpha, beta=tversky_beta)
 
@@ -53,7 +63,12 @@ class SegmentationLoss(nn.Module):
     def forward(self, logits: torch.Tensor, target: torch.Tensor, valid_region: torch.Tensor | None = None) -> torch.Tensor:
         loss = logits.new_tensor(0.0)
         if self.bce_weight > 0:
-            loss = loss + self.bce_weight * masked_bce_with_logits(logits, target, valid_region)
+            loss = loss + self.bce_weight * masked_bce_with_logits(
+                logits,
+                target,
+                valid_region,
+                positive_weight=self.bce_positive_weight,
+            )
         if self.dice_weight > 0:
             loss = loss + self.dice_weight * self.dice(logits, target, valid_region)
         if self.focal_weight > 0:

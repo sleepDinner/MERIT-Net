@@ -32,6 +32,20 @@ image_path,mask_path,label
 
 where `0` is authentic/negative and `1` is tampered/positive.
 
+The default split strategy is `source_aware`. After scanning validates each image/mask pair, the splitter derives a `source_group` from the image path and assigns whole source groups to either train or validation. This prevents the same source, generation pipeline, or mask style from leaking into both train and val. The split keeps each `SampleRecord` intact, so `image_path`, `mask_path`, and `label` are moved together and masks are never re-matched during splitting.
+
+Split QA files are written to:
+
+```text
+outputs/splits/split_summary.json
+outputs/splits/source_groups.csv
+outputs/splits/split_audit.csv
+outputs/splits/pair_mismatches.csv
+outputs/ambiguous_pairs.csv
+```
+
+`split_audit.csv` reopens every train/val image and mask after splitting, checks file existence, image/mask size equality, label consistency, duplicate image/mask paths, and train/val source group overlap. With `strict_pair_audit: true`, training stops if any audit error is found.
+
 ## Train
 
 Single GPU:
@@ -61,7 +75,7 @@ torchrun --nproc_per_node=2 -m tools.train_pipeline --pipeline configs/pipeline_
 For manual model-only fine-tuning:
 
 ```bash
-python tools/train.py --config configs/stage2_512.yaml --pretrained outputs/merit_net_s_512_stage1/checkpoints/epochXX.pth
+python tools/train.py --config configs/stage2_512.yaml --pretrained outputs/merit_net_s_512_stage1_recall_pvtv2b2/checkpoints/epochXX.pth
 ```
 
 Detached two-GPU DDP run with stdout/stderr redirected to a log file:
@@ -78,7 +92,7 @@ Follow logs:
 
 ```bash
 tail -f /home/hl/train_merit_net_s_512_stdout.log
-tail -f outputs/merit_net_s_512/logs/train.log
+tail -f outputs/merit_net_s_512_pvtv2b2/logs/train.log
 ```
 
 Training progress is updated in place on one stdout line per phase, with `Epoch current/total`, an ASCII progress bar, elapsed time, ETA, and loss. Epoch summaries include validation `pixel_f1`, `pixel_auc`, `image_auc`, IoU and FPR.
@@ -183,6 +197,31 @@ augmentation_schedule:
 
 Warmup keeps degradations very light so the model first learns tamper regions and residual traces. Middle training introduces mild JPEG, blur, noise, downscale and color shifts. Robust training uses a total `degradation_prob` around 0.35 to randomly apply only one or two degradations, so most images remain original or lightly augmented instead of stacking every degradation at once.
 
+Stage2 and stage3 are calibration-oriented fine-tuning stages. They enable a scalar `LogitCalibration` layer after the final mask logits and freeze the global/residual encoders:
+
+```yaml
+model:
+  use_logit_calibration: true
+
+train:
+  freeze_modules:
+    - global_encoder
+    - residual_encoder
+```
+
+The calibration layer starts as identity and learns a global logit scale and bias. This targets the observed cross-domain issue where masks are roughly localized but probabilities are too low, causing default-threshold recall to collapse. The raw logits are still exposed as `raw_final_mask_logits`, while training and evaluation use the calibrated `final_mask_logits`.
+
+The staged configs use `pvt_v2_b2` as the global pretrained backbone. Stage1 trains the backbone with a lower parameter-group learning rate:
+
+```yaml
+train:
+  lr: 0.00006
+  param_lr_multipliers:
+    global_encoder: 0.35
+```
+
+So the PVTv2-B2 encoder uses about `2.1e-5`, while decoder, fusion, refinement and heads use the base learning rate. Stage2/stage3 freeze the encoders, so the PVTv2 learning rate does not apply there.
+
 ## Evaluate All Test Sets
 
 Default staged evaluation reads `best_checkpoint.txt` from the three staged output directories and evaluates all of them:
@@ -194,17 +233,17 @@ python eval/eval_all_testsets.py --pipeline configs/pipeline_512_768.yaml
 This evaluates:
 
 ```text
-outputs/merit_net_s_512_stage1_pvt/checkpoints/best_checkpoint.txt
-outputs/merit_net_s_512_stage2_pvt/checkpoints/best_checkpoint.txt
-outputs/merit_net_s_768_stage3_pvt/checkpoints/best_checkpoint.txt
+outputs/merit_net_s_512_stage1_recall_pvtv2b2/
+outputs/merit_net_s_512_stage2_recall_calib_pvtv2b2/
+outputs/merit_net_s_768_stage3_recall_calib_pvtv2b2/
 ```
 
 Per-stage results are kept under a timestamped directory:
 
 ```text
-outputs/test_results/staged_YYYYMMDD_HHMMSS/stage1_pvt/
-outputs/test_results/staged_YYYYMMDD_HHMMSS/stage2_pvt/
-outputs/test_results/staged_YYYYMMDD_HHMMSS/stage3_pvt/
+outputs/test_results/staged_YYYYMMDD_HHMMSS/stage1_recall_pvtv2b2/
+outputs/test_results/staged_YYYYMMDD_HHMMSS/stage2_recall_calib_pvtv2b2/
+outputs/test_results/staged_YYYYMMDD_HHMMSS/stage3_recall_calib_pvtv2b2/
 ```
 
 The combined summary is saved as:

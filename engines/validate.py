@@ -29,6 +29,7 @@ def validate(
     max_pixel_auc_samples: int = 2_000_000,
     pixel_auc_samples_per_image: int = 4096,
     pixel_auc_seed: int = 12345,
+    report_thresholds: list[float] | None = None,
 ) -> Dict[str, float]:
     model.eval()
     accumulator = MetricAccumulator(
@@ -36,6 +37,7 @@ def validate(
         max_pixel_auc_samples=max_pixel_auc_samples,
         pixel_auc_samples_per_image=pixel_auc_samples_per_image,
         pixel_auc_seed=pixel_auc_seed,
+        report_thresholds=report_thresholds,
     )
     loss_logs = defaultdict(float)
     count = 0
@@ -83,7 +85,7 @@ def validate(
     if dist.is_available() and dist.is_initialized():
         gathered = [None for _ in range(dist.get_world_size())]
         dist.all_gather_object(gathered, accumulator.state_dict())
-        merged = MetricAccumulator(threshold=threshold)
+        merged = MetricAccumulator(threshold=threshold, report_thresholds=report_thresholds)
         for state in gathered:
             merged.merge(MetricAccumulator.from_state_dict(state))
         accumulator = merged

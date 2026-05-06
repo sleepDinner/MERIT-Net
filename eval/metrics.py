@@ -19,6 +19,11 @@ def _safe_auc(y_true: np.ndarray, y_score: np.ndarray) -> float:
         return float("nan")
 
 
+def _threshold_name(threshold: float) -> str:
+    text = f"{float(threshold):.6g}".replace("-", "m").replace(".", "p")
+    return text
+
+
 def _edge_np(mask: np.ndarray) -> np.ndarray:
     t = torch.from_numpy(mask.astype(np.float32))[None, None]
     dil = F.max_pool2d(t, 5, stride=1, padding=2)
@@ -40,17 +45,19 @@ class MetricAccumulator:
         max_pixel_auc_samples: int = 2_000_000,
         pixel_auc_samples_per_image: int = 4096,
         pixel_auc_seed: int = 12345,
+        report_thresholds: List[float] | None = None,
     ):
         self.threshold = float(threshold)
         self.max_pixel_auc_samples = int(max_pixel_auc_samples)
         self.pixel_auc_samples_per_image = int(pixel_auc_samples_per_image)
         self.pixel_auc_seed = int(pixel_auc_seed)
+        self.report_thresholds = [float(t) for t in (report_thresholds or [0.001, 0.01, 0.05, 0.1, 0.5])]
         self._pixel_auc_rng = np.random.default_rng(self.pixel_auc_seed)
         self._pixel_auc_count = 0
         self._pixel_auc_seen = 0
         self._pixel_scores_buf = None
         self._pixel_labels_buf = None
-        self.sweep_thresholds = [
+        base_thresholds = [
             0.0001,
             0.0005,
             0.001,
@@ -78,7 +85,8 @@ class MetricAccumulator:
             0.90,
             0.95,
         ]
-        self.sweep_stats = {str(t): {"tp": 0, "fp": 0, "fn": 0} for t in self.sweep_thresholds}
+        self.sweep_thresholds = sorted({float(t) for t in [*base_thresholds, *self.report_thresholds]})
+        self.sweep_stats = {str(t): {"tp": 0, "fp": 0, "fn": 0, "tn": 0} for t in self.sweep_thresholds}
         self.tp = 0
         self.fp = 0
         self.fn = 0
@@ -183,6 +191,7 @@ class MetricAccumulator:
                 stat["tp"] += int((sweep_pred & positives).sum())
                 stat["fp"] += int((sweep_pred & negatives).sum())
                 stat["fn"] += int((~sweep_pred & positives).sum())
+                stat["tn"] += int((~sweep_pred & negatives).sum())
 
             self._add_pixel_auc_samples(prob, gt)
 
@@ -238,10 +247,11 @@ class MetricAccumulator:
             )
         for key, stat in other.sweep_stats.items():
             if key not in self.sweep_stats:
-                self.sweep_stats[key] = {"tp": 0, "fp": 0, "fn": 0}
+                self.sweep_stats[key] = {"tp": 0, "fp": 0, "fn": 0, "tn": 0}
             self.sweep_stats[key]["tp"] += int(stat["tp"])
             self.sweep_stats[key]["fp"] += int(stat["fp"])
             self.sweep_stats[key]["fn"] += int(stat["fn"])
+            self.sweep_stats[key]["tn"] += int(stat.get("tn", 0))
 
     def state_dict(self) -> Dict:
         state = self.__dict__.copy()
@@ -278,12 +288,13 @@ class MetricAccumulator:
         return float(tp / max(1, tp + fn))
 
     def _best_threshold_metrics(self) -> Dict[str, float]:
-        best = {"f1": -1.0, "threshold": 0.5, "precision": 0.0, "recall": 0.0}
+        best = {"f1": -1.0, "threshold": 0.5, "precision": 0.0, "recall": 0.0, "fpr": 0.0, "iou": 0.0}
         for key, stat in self.sweep_stats.items():
             threshold = float(key)
             tp = int(stat["tp"])
             fp = int(stat["fp"])
             fn = int(stat["fn"])
+            tn = int(stat.get("tn", 0))
             f1 = self._f1(tp, fp, fn)
             if f1 > best["f1"]:
                 best = {
@@ -291,13 +302,35 @@ class MetricAccumulator:
                     "threshold": float(threshold),
                     "precision": self._precision(tp, fp),
                     "recall": self._recall(tp, fn),
+                    "fpr": float(fp / max(1, fp + tn)),
+                    "iou": float(tp / max(1, tp + fp + fn)),
                 }
         return {
             "best_pixel_f1": best["f1"],
             "best_threshold": best["threshold"],
             "best_pixel_precision": best["precision"],
             "best_pixel_recall": best["recall"],
+            "best_pixel_fpr": best["fpr"],
+            "best_iou": best["iou"],
         }
+
+    def _reported_threshold_metrics(self) -> Dict[str, float]:
+        metrics: Dict[str, float] = {}
+        for threshold in self.report_thresholds:
+            stat = self.sweep_stats.get(str(float(threshold)))
+            if stat is None:
+                continue
+            tp = int(stat["tp"])
+            fp = int(stat["fp"])
+            fn = int(stat["fn"])
+            tn = int(stat.get("tn", 0))
+            suffix = _threshold_name(threshold)
+            metrics[f"pixel_f1_at_{suffix}"] = self._f1(tp, fp, fn)
+            metrics[f"pixel_precision_at_{suffix}"] = self._precision(tp, fp)
+            metrics[f"pixel_recall_at_{suffix}"] = self._recall(tp, fn)
+            metrics[f"iou_at_{suffix}"] = float(tp / max(1, tp + fp + fn))
+            metrics[f"fpr_at_{suffix}"] = float(fp / max(1, fp + tn))
+        return metrics
 
     def compute(self, prefix: str = "") -> Dict[str, float]:
         tp, fp, fn, tn = self.tp, self.fp, self.fn, self.tn
@@ -342,6 +375,7 @@ class MetricAccumulator:
             "boundary_f1": boundary_f1,
         }
         metrics.update(self._best_threshold_metrics())
+        metrics.update(self._reported_threshold_metrics())
         if prefix:
             return {f"{prefix}_{k}": v for k, v in metrics.items()}
         return metrics

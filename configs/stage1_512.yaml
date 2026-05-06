@@ -1,5 +1,5 @@
 seed: 42
-output_dir: outputs/merit_net_s_512_stage1_pvt
+output_dir: outputs/merit_net_s_512_stage1_recall_pvtv2b2
 
 data:
   train_root: /data0/lzb-change-vmunet/FinalTrainData/
@@ -7,6 +7,24 @@ data:
   img_size: 512
   split_ratio: 0.9
   balance_pos_neg: true
+  split_strategy: source_aware
+  force_resplit: false
+  source_group_depth: 2
+  min_val_groups: 2
+  split_audit: true
+  strict_pair_audit: true
+  source_group_ignore_dirs:
+    - images
+    - image
+    - imgs
+    - masks
+    - mask
+    - gt
+    - gts
+    - groundtruth
+    - ground_truth
+    - labels
+    - label
   num_workers: 16
   eval_num_workers: 8
   pin_memory: true
@@ -24,7 +42,7 @@ data:
 model:
   name: MERITNet
   img_size: 512
-  global_backbone: pvt_v2_b1
+  global_backbone: pvt_v2_b2
   global_pretrained: true
   allow_global_fallback: false
   local_backbone: light_resnet18
@@ -37,6 +55,7 @@ model:
   use_confidence_head: false
   use_image_head: false
   use_family_head: false
+  use_logit_calibration: false
   use_aux_outputs: true
   use_edge_loss: true
   num_families: 5
@@ -58,6 +77,8 @@ train:
   lr: 0.00006
   min_lr: 0.000001
   weight_decay: 0.0001
+  param_lr_multipliers:
+    global_encoder: 0.35
   warmup_epochs: 3
   scheduler: cosine
   early_stopping:
@@ -87,13 +108,14 @@ loss:
   coarse_seg: 0.4
   aux_seg: 0.15
   seg_bce: 1.0
+  seg_bce_pos_weight: 1.10
   seg_dice: 1.0
-  seg_focal: 0.25
-  seg_tversky: 0.35
-  focal_alpha: 0.75
+  seg_focal: 0.30
+  seg_tversky: 0.40
+  focal_alpha: 0.78
   focal_gamma: 2.0
-  tversky_alpha: 0.3
-  tversky_beta: 0.7
+  tversky_alpha: 0.25
+  tversky_beta: 0.75
   edge: 0.2
   confidence: 0.0
   confidence_warmup_epochs: 999
@@ -181,18 +203,21 @@ eval:
   max_pixel_auc_samples: 2000000
   pixel_auc_samples_per_image: 4096
   pixel_auc_seed: 42
+  report_thresholds: [0.0001, 0.001, 0.005, 0.01, 0.05, 0.1, 0.5]
   save_predictions: true
   best_score:
     weights:
-      val_pixel_f1: 0.4
-      val_best_pixel_f1: 0.3
-      val_boundary_f1: 0.2
-      val_pixel_auc: 0.1
+      val_pixel_f1: 0.30
+      val_best_pixel_f1: 0.25
+      val_boundary_f1: 0.15
+      val_pixel_auc: 0.15
+      val_pixel_recall: 0.10
+      val_best_pixel_recall: 0.05
     loss_guard:
       enabled: true
       loss_key: val_loss_final_seg
-      relative_tolerance: 0.15
-      penalty_weight: 0.5
+      relative_tolerance: 0.12
+      penalty_weight: 0.6
 
 ddp:
   backend: nccl

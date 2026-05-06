@@ -41,7 +41,7 @@ class FallbackGlobalEncoder(nn.Module):
 class GlobalEncoder(nn.Module):
     def __init__(
         self,
-        backbone_name: str = "pvt_v2_b1",
+        backbone_name: str = "pvt_v2_b2",
         pretrained: bool = True,
         gradient_checkpointing: bool = False,
         allow_fallback: bool = False,
@@ -62,9 +62,11 @@ class GlobalEncoder(nn.Module):
             self.fallback_reason = "explicit fallback backbone requested"
             return
 
+        timm_version = "not imported"
         try:
             import timm
 
+            timm_version = getattr(timm, "__version__", "unknown")
             self.model = timm.create_model(
                 backbone_name,
                 pretrained=pretrained,
@@ -79,7 +81,8 @@ class GlobalEncoder(nn.Module):
             if not allow_fallback:
                 raise RuntimeError(
                     "Failed to initialize the requested global backbone "
-                    f"'{backbone_name}' with pretrained={pretrained}. Install timm and make sure "
+                    f"'{backbone_name}' with pretrained={pretrained}. Install timm>=1.0.26 "
+                    f"(current timm version: {timm_version}) and make sure "
                     "the pretrained weights are available, or set model.allow_global_fallback=true "
                     "or model.global_backbone=fallback_cnn explicitly if you really want the small CNN fallback. "
                     f"Original error: {type(exc).__name__}: {exc}"

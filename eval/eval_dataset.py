@@ -56,6 +56,7 @@ def evaluate_split(
         max_pixel_auc_samples=int(eval_cfg.get("max_pixel_auc_samples", 2_000_000)),
         pixel_auc_samples_per_image=int(eval_cfg.get("pixel_auc_samples_per_image", 4096)),
         pixel_auc_seed=int(eval_cfg.get("pixel_auc_seed", config.get("seed", 42))),
+        report_thresholds=[float(t) for t in eval_cfg.get("report_thresholds", [0.001, 0.01, 0.05, 0.1, 0.5])],
     )
     per_image_rows = []
     progress = ProgressLine() if show_progress else None

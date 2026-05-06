@@ -1,5 +1,5 @@
 seed: 42
-output_dir: outputs/merit_net_s_768
+output_dir: outputs/merit_net_s_768_pvtv2b2
 
 data:
   train_root: /data0/lzb-change-vmunet/FinalTrainData/
@@ -7,6 +7,24 @@ data:
   img_size: 768
   split_ratio: 0.9
   balance_pos_neg: true
+  split_strategy: source_aware
+  force_resplit: false
+  source_group_depth: 2
+  min_val_groups: 2
+  split_audit: true
+  strict_pair_audit: true
+  source_group_ignore_dirs:
+    - images
+    - image
+    - imgs
+    - masks
+    - mask
+    - gt
+    - gts
+    - groundtruth
+    - ground_truth
+    - labels
+    - label
   num_workers: 16
   eval_num_workers: 8
   pin_memory: true
@@ -24,7 +42,7 @@ data:
 model:
   name: MERITNet
   img_size: 768
-  global_backbone: pvt_v2_b1
+  global_backbone: pvt_v2_b2
   global_pretrained: true
   allow_global_fallback: false
   local_backbone: light_resnet18
@@ -37,6 +55,7 @@ model:
   use_confidence_head: true
   use_image_head: true
   use_family_head: false
+  use_logit_calibration: false
   use_aux_outputs: true
   use_edge_loss: true
   num_families: 5
@@ -55,9 +74,11 @@ train:
   log_interval: 20
   amp: true
   optimizer: AdamW
-  lr: 0.00006
+  lr: 0.00004
   min_lr: 0.000001
   weight_decay: 0.0001
+  param_lr_multipliers:
+    global_encoder: 0.35
   warmup_epochs: 3
   scheduler: cosine
   early_stopping:

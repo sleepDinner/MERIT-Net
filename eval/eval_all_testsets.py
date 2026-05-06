@@ -81,13 +81,22 @@ def _best_checkpoint_from_config(config: dict[str, Any]) -> Path:
 
 def _stage_name_from_config(config_path: Path, config: dict[str, Any]) -> str:
     output_name = Path(config.get("output_dir", "")).name
-    match = re.search(r"(stage\d+)(?:_[^_]+)*?(_pvt)?$", output_name)
-    if match:
-        return f"{match.group(1)}{match.group(2) or ''}"
     match = re.search(r"(stage\d+)", output_name)
     if match:
-        suffix = "_pvt" if "pvt" in output_name.lower() else ""
-        return f"{match.group(1)}{suffix}"
+        parts = [match.group(1)]
+        lower_name = output_name.lower()
+        if "recall" in lower_name:
+            parts.append("recall")
+        if "calib" in lower_name or "calibration" in lower_name:
+            parts.append("calib")
+        backbone = str(config.get("model", {}).get("global_backbone", "")).lower()
+        if "pvtv2b2" in lower_name or "pvt_v2_b2" in backbone:
+            parts.append("pvtv2b2")
+        elif "pvtv2b1" in lower_name or "pvt_v2_b1" in backbone:
+            parts.append("pvtv2b1")
+        elif "pvt" in lower_name or "pvt" in backbone:
+            parts.append("pvt")
+        return "_".join(parts)
     return config_path.stem
 
 

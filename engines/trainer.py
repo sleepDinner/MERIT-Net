@@ -14,7 +14,7 @@ from torch.nn.parallel import DistributedDataParallel
 from torch.utils.data import DataLoader, Sampler
 from torch.utils.data.distributed import DistributedSampler
 
-from datasets.dataset_scanner import scan_and_split_from_config
+from datasets.dataset_scanner import scan_and_split_from_config, should_resplit_from_config
 from datasets.tamper_dataset import TamperDataset
 from engines.logger import CSVMetricLogger, setup_logger
 from engines.optim_scheduler import build_optimizer, build_scheduler
@@ -54,6 +54,15 @@ def set_seed(seed: int) -> None:
     torch.manual_seed(seed)
     torch.cuda.manual_seed_all(seed)
     torch.backends.cudnn.benchmark = True
+
+
+def _worker_loader_kwargs(num_workers: int, persistent_workers: bool, prefetch_factor: int | None) -> Dict:
+    if num_workers <= 0:
+        return {}
+    kwargs = {"persistent_workers": persistent_workers}
+    if prefetch_factor is not None:
+        kwargs["prefetch_factor"] = prefetch_factor
+    return kwargs
 
 
 def _read_info_path(path: Path, key: str) -> Optional[str]:
@@ -101,6 +110,8 @@ def _checkpoint_metric_info(
         f"{prefix}_val_best_score": _format_metric(val_logs.get("val_best_score")),
         f"{prefix}_val_best_score_raw": _format_metric(val_logs.get("val_best_score_raw", val_logs.get("val_best_score"))),
         f"{prefix}_loss_guard_penalty": _format_metric(val_logs.get("val_loss_guard_penalty", 0.0)),
+        f"{prefix}_logit_calibration_scale": _format_metric(val_logs.get("logit_calibration_scale")),
+        f"{prefix}_logit_calibration_bias": _format_metric(val_logs.get("logit_calibration_bias")),
     }
 
 
@@ -325,6 +336,38 @@ def _load_pretrained_model(path: Path, model, map_location, logger=None) -> None
         print(message)
 
 
+def _apply_freeze_config(model: torch.nn.Module, train_cfg: Dict, logger=None) -> None:
+    freeze_modules = list(train_cfg.get("freeze_modules", []))
+    if bool(train_cfg.get("freeze_encoders", False)):
+        freeze_modules.extend(["global_encoder", "residual_encoder"])
+    freeze_modules = [str(item).strip() for item in freeze_modules if str(item).strip()]
+    if not freeze_modules:
+        return
+
+    total_params = 0
+    frozen_params = 0
+    frozen_tensors = 0
+    for name, param in model.named_parameters():
+        total_params += param.numel()
+        should_freeze = any(name == prefix or name.startswith(prefix + ".") for prefix in freeze_modules)
+        if should_freeze:
+            param.requires_grad_(False)
+            frozen_params += param.numel()
+            frozen_tensors += 1
+    trainable_params = sum(param.numel() for param in model.parameters() if param.requires_grad)
+    if trainable_params <= 0:
+        raise RuntimeError(f"freeze_modules={freeze_modules} froze all model parameters.")
+    message = (
+        f"Freeze config applied: freeze_modules={freeze_modules} "
+        f"frozen_tensors={frozen_tensors} frozen_params={frozen_params} "
+        f"trainable_params={trainable_params} total_params={total_params}"
+    )
+    if logger is not None:
+        logger.info(message)
+    else:
+        print(message)
+
+
 def _disable_family_if_unreliable(config: Dict, scan_output_dir: Path, logger) -> None:
     model_cfg = config.setdefault("model", {})
     if not model_cfg.get("use_family_head", False):
@@ -365,8 +408,9 @@ def train(config: Dict, resume: str | None = None, pretrained: str | None = None
     scan_output_dir = Path(data_cfg.get("scan_output_dir", "outputs"))
     train_split = scan_output_dir / "splits" / "train.txt"
     val_split = scan_output_dir / "splits" / "val.txt"
-    if is_rank0() and (not train_split.exists() or not val_split.exists()):
-        logger.info("Split files not found; scanning dataset and creating train/val splits.")
+    needs_resplit, resplit_reason = should_resplit_from_config(config, train_split, val_split)
+    if is_rank0() and needs_resplit:
+        logger.info(f"Scanning dataset and creating train/val splits. reason={resplit_reason}")
         scan_and_split_from_config(config, log_fn=logger.info)
     if distributed:
         distributed_barrier(local_rank)
@@ -429,9 +473,8 @@ def train(config: Dict, resume: str | None = None, pretrained: str | None = None
         sampler=train_sampler,
         num_workers=train_num_workers,
         pin_memory=bool(data_cfg.get("pin_memory", True)),
-        persistent_workers=train_persistent_workers,
-        prefetch_factor=train_prefetch_factor,
         drop_last=False,
+        **_worker_loader_kwargs(train_num_workers, train_persistent_workers, train_prefetch_factor),
     )
     train_eval_loader = (
         DataLoader(
@@ -441,9 +484,8 @@ def train(config: Dict, resume: str | None = None, pretrained: str | None = None
             sampler=train_eval_sampler,
             num_workers=eval_num_workers,
             pin_memory=bool(data_cfg.get("pin_memory", True)),
-            persistent_workers=eval_persistent_workers,
-            prefetch_factor=eval_prefetch_factor,
             drop_last=False,
+            **_worker_loader_kwargs(eval_num_workers, eval_persistent_workers, eval_prefetch_factor),
         )
         if train_eval_dataset is not None
         else None
@@ -455,15 +497,23 @@ def train(config: Dict, resume: str | None = None, pretrained: str | None = None
         sampler=val_sampler,
         num_workers=eval_num_workers,
         pin_memory=bool(data_cfg.get("pin_memory", True)),
-        persistent_workers=eval_persistent_workers,
-        prefetch_factor=eval_prefetch_factor,
         drop_last=False,
+        **_worker_loader_kwargs(eval_num_workers, eval_persistent_workers, eval_prefetch_factor),
     )
 
     model = MERITNet(config.get("model", {})).to(device)
     if is_rank0():
         for summary in model.encoder_summary().values():
             logger.info(summary)
+
+    if pretrained:
+        pretrained_path = Path(pretrained)
+        if not pretrained_path.exists():
+            raise FileNotFoundError(f"Pretrained checkpoint not found: {pretrained_path}")
+        _load_pretrained_model(pretrained_path, model, map_location=device, logger=logger if is_rank0() else None)
+
+    _apply_freeze_config(model, train_cfg, logger=logger if is_rank0() else None)
+
     if distributed:
         model = DistributedDataParallel(
             model,
@@ -472,14 +522,16 @@ def train(config: Dict, resume: str | None = None, pretrained: str | None = None
             find_unused_parameters=bool(config.get("ddp", {}).get("find_unused_parameters", False)),
         )
 
-    if pretrained:
-        pretrained_path = Path(pretrained)
-        if not pretrained_path.exists():
-            raise FileNotFoundError(f"Pretrained checkpoint not found: {pretrained_path}")
-        _load_pretrained_model(pretrained_path, model, map_location=device, logger=logger if is_rank0() else None)
-
     criterion = MERITLoss(config)
     optimizer = build_optimizer(model, config.get("train", {}))
+    if is_rank0():
+        group_text = []
+        for idx, group in enumerate(optimizer.param_groups):
+            group_params = sum(param.numel() for param in group.get("params", []))
+            group_text.append(
+                f"{idx}:{group.get('name', 'default')} lr={group.get('lr', float('nan')):.8f} params={group_params}"
+            )
+        logger.info("Optimizer parameter groups: " + "; ".join(group_text))
     scheduler = build_scheduler(optimizer, config.get("train", {}))
     amp = bool(config.get("train", {}).get("amp", True)) and device.type == "cuda"
     if hasattr(torch, "amp") and hasattr(torch.amp, "GradScaler"):
@@ -520,6 +572,7 @@ def train(config: Dict, resume: str | None = None, pretrained: str | None = None
     max_pixel_auc_samples = int(eval_cfg.get("max_pixel_auc_samples", 2_000_000))
     pixel_auc_samples_per_image = int(eval_cfg.get("pixel_auc_samples_per_image", 4096))
     pixel_auc_seed = int(eval_cfg.get("pixel_auc_seed", config.get("seed", 42)))
+    report_thresholds = [float(t) for t in eval_cfg.get("report_thresholds", [0.001, 0.01, 0.05, 0.1, 0.5])]
     log_interval = int(train_cfg.get("log_interval", 20))
     train_eval_interval = max(1, int(train_cfg.get("train_eval_interval", 1)))
     train_eval_first_epoch = bool(train_cfg.get("train_eval_first_epoch", True))
@@ -571,6 +624,7 @@ def train(config: Dict, resume: str | None = None, pretrained: str | None = None
                 max_pixel_auc_samples=max_pixel_auc_samples,
                 pixel_auc_samples_per_image=pixel_auc_samples_per_image,
                 pixel_auc_seed=pixel_auc_seed,
+                report_thresholds=report_thresholds,
             )
         val_logs = validate(
             model,
@@ -587,9 +641,13 @@ def train(config: Dict, resume: str | None = None, pretrained: str | None = None
             max_pixel_auc_samples=max_pixel_auc_samples,
             pixel_auc_samples_per_image=pixel_auc_samples_per_image,
             pixel_auc_seed=pixel_auc_seed,
+            report_thresholds=report_thresholds,
         )
         _add_best_score(val_logs, config.get("eval", {}))
         loss_guard_best_loss = _apply_loss_guard(val_logs, config.get("eval", {}), loss_guard_best_loss)
+        raw_model = model.module if hasattr(model, "module") else model
+        if hasattr(raw_model, "calibration_statistics"):
+            val_logs.update(raw_model.calibration_statistics())
         scheduler.step()
         val_history.append({"epoch": float(epoch), **val_logs})
 
@@ -678,6 +736,8 @@ def train(config: Dict, resume: str | None = None, pretrained: str | None = None
                 f"val_best_score={val_logs.get('val_best_score', float('nan')):.5f} "
                 f"loss_guard_penalty={val_logs.get('val_loss_guard_penalty', 0.0):.5f} "
                 f"val_image_auc={val_logs.get('val_image_auc', float('nan')):.5f} "
+                f"calib_scale={val_logs.get('logit_calibration_scale', float('nan')):.4f} "
+                f"calib_bias={val_logs.get('logit_calibration_bias', float('nan')):.4f} "
                 f"best_{monitor}={best_metric:.5f} ckpt={ckpt_path}"
             )
 

@@ -42,6 +42,7 @@ class MERITLoss(nn.Module):
             focal_gamma=float(loss_cfg.get("focal_gamma", 2.0)),
             tversky_alpha=float(loss_cfg.get("tversky_alpha", 0.3)),
             tversky_beta=float(loss_cfg.get("tversky_beta", 0.7)),
+            bce_positive_weight=float(loss_cfg.get("seg_bce_pos_weight", 1.0)),
         )
         self.edge_loss = EdgeLoss()
         self.confidence_loss = ConfidenceLoss(mode=loss_cfg.get("confidence_mode", "l1"))

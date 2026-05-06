@@ -13,6 +13,7 @@ from models.heads.family_head import FamilyHead
 from models.heads.image_head import ImageLevelHead
 from models.modules.decoder import LightweightDecoder
 from models.modules.gated_fusion import ScaleWiseGatedFusion
+from models.modules.logit_calibration import LogitCalibration
 from models.modules.refinement import MaskGuidedRefinement
 
 
@@ -53,6 +54,7 @@ class MERITNet(nn.Module):
         self.use_image_head = bool(cfg.get("use_image_head", True))
         self.use_family_head = bool(cfg.get("use_family_head", False))
         self.use_aux_outputs = bool(cfg.get("use_aux_outputs", False))
+        self.use_logit_calibration = bool(cfg.get("use_logit_calibration", False))
         self.gradient_checkpointing = bool(cfg.get("gradient_checkpointing", False))
 
         fusion_channels = cfg.get("fusion_channels", [64, 128, 256, 512])
@@ -60,7 +62,7 @@ class MERITNet(nn.Module):
 
         if self.use_transformer_branch:
             self.global_encoder = GlobalEncoder(
-                backbone_name=cfg.get("global_backbone", "pvt_v2_b1"),
+                backbone_name=cfg.get("global_backbone", "pvt_v2_b2"),
                 pretrained=bool(cfg.get("global_pretrained", True)),
                 gradient_checkpointing=self.gradient_checkpointing,
                 allow_fallback=bool(cfg.get("allow_global_fallback", False)),
@@ -94,6 +96,16 @@ class MERITNet(nn.Module):
 
         self.decoder = LightweightDecoder(fusion_channels, embed_dim=embed_dim, use_aux_outputs=self.use_aux_outputs)
         self.refinement = MaskGuidedRefinement(embed_dim) if self.use_refinement else None
+        self.logit_calibration = (
+            LogitCalibration(
+                init_scale=float(cfg.get("calibration_init_scale", 1.0)),
+                init_bias=float(cfg.get("calibration_init_bias", 0.0)),
+                min_scale=float(cfg.get("calibration_min_scale", 0.2)),
+                max_scale=float(cfg.get("calibration_max_scale", 5.0)),
+            )
+            if self.use_logit_calibration
+            else None
+        )
         self.confidence_head = ConfidenceHead(embed_dim) if self.use_confidence_head else None
         self.image_head = ImageLevelHead() if self.use_image_head else None
         self.family_head = FamilyHead(embed_dim, int(cfg.get("num_families", 5))) if self.use_family_head else None
@@ -120,6 +132,9 @@ class MERITNet(nn.Module):
         else:
             final_feature = decoder_feature
             final_full = coarse_full
+        raw_final_full = final_full
+        if self.logit_calibration is not None:
+            final_full = self.logit_calibration(raw_final_full)
 
         if self.confidence_head is not None:
             confidence_low = self.confidence_head(final_feature)
@@ -142,6 +157,7 @@ class MERITNet(nn.Module):
 
         output = {
             "coarse_mask_logits": coarse_full,
+            "raw_final_mask_logits": raw_final_full,
             "final_mask_logits": final_full,
             "confidence_logits": confidence_full,
             "image_logits": image_logits,
@@ -163,3 +179,8 @@ class MERITNet(nn.Module):
         if self.global_encoder is None:
             return {"global_encoder": "disabled"}
         return {"global_encoder": self.global_encoder.summary()}
+
+    def calibration_statistics(self) -> Dict[str, float]:
+        if self.logit_calibration is None:
+            return {}
+        return self.logit_calibration.values()
