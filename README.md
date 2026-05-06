@@ -75,7 +75,7 @@ torchrun --nproc_per_node=2 -m tools.train_pipeline --pipeline configs/pipeline_
 For manual model-only fine-tuning:
 
 ```bash
-python tools/train.py --config configs/stage2_512.yaml --pretrained outputs/merit_net_s_512_stage1_recall_pvtv2b2/checkpoints/epochXX.pth
+python tools/train.py --config configs/stage2_512.yaml --pretrained outputs/merit_net_s_512_stage1_recall_pvtv2b2_lora/checkpoints/epochXX.pth
 ```
 
 Detached two-GPU DDP run with stdout/stderr redirected to a log file:
@@ -92,7 +92,7 @@ Follow logs:
 
 ```bash
 tail -f /home/hl/train_merit_net_s_512_stdout.log
-tail -f outputs/merit_net_s_512_pvtv2b2/logs/train.log
+tail -f outputs/merit_net_s_512_pvtv2b2_lora/logs/train.log
 ```
 
 Training progress is updated in place on one stdout line per phase, with `Epoch current/total`, an ASCII progress bar, elapsed time, ETA, and loss. Epoch summaries include validation `pixel_f1`, `pixel_auc`, `image_auc`, IoU and FPR.
@@ -197,7 +197,7 @@ augmentation_schedule:
 
 Warmup keeps degradations very light so the model first learns tamper regions and residual traces. Middle training introduces mild JPEG, blur, noise, downscale and color shifts. Robust training uses a total `degradation_prob` around 0.35 to randomly apply only one or two degradations, so most images remain original or lightly augmented instead of stacking every degradation at once.
 
-Stage2 and stage3 are calibration-oriented fine-tuning stages. They enable a scalar `LogitCalibration` layer after the final mask logits and freeze the global/residual encoders:
+Stage2 and stage3 are calibration-oriented fine-tuning stages. They enable a scalar `LogitCalibration` layer after the final mask logits and freeze the residual encoder plus the pretrained PVTv2 base weights. LoRA adapters inside `global_encoder` stay trainable:
 
 ```yaml
 model:
@@ -207,20 +207,34 @@ train:
   freeze_modules:
     - global_encoder
     - residual_encoder
+  freeze_keep_lora: true
 ```
 
 The calibration layer starts as identity and learns a global logit scale and bias. This targets the observed cross-domain issue where masks are roughly localized but probabilities are too low, causing default-threshold recall to collapse. The raw logits are still exposed as `raw_final_mask_logits`, while training and evaluation use the calibrated `final_mask_logits`.
 
-The staged configs use `pvt_v2_b2` as the global pretrained backbone. Stage1 trains the backbone with a lower parameter-group learning rate:
+The staged configs use `pvt_v2_b2` as the global pretrained backbone and adapt it with LoRA instead of full backbone fine-tuning:
 
 ```yaml
+model:
+  use_lora: true
+  lora_rank: 8
+  lora_alpha: 16
+  lora_dropout: 0.05
+  lora_freeze_base: true
+  lora_target_modules:
+    - attn.q
+    - attn.kv
+    - attn.proj
+    - mlp.fc1
+    - mlp.fc2
+
 train:
   lr: 0.00006
   param_lr_multipliers:
-    global_encoder: 0.35
+    global_encoder: 1.0
 ```
 
-So the PVTv2-B2 encoder uses about `2.1e-5`, while decoder, fusion, refinement and heads use the base learning rate. Stage2/stage3 freeze the encoders, so the PVTv2 learning rate does not apply there.
+The original PVTv2-B2 weights are frozen by `lora_freeze_base: true`; only the LoRA low-rank adapters under `global_encoder` are trainable. This keeps the ImageNet-pretrained representation stable while still allowing cross-domain adaptation for tamper localization. Stage2/stage3 keep LoRA trainable and freeze the residual branch, so confidence/logit calibration can adjust probabilities without rewriting the full encoder.
 
 ## Evaluate All Test Sets
 
@@ -233,17 +247,17 @@ python eval/eval_all_testsets.py --pipeline configs/pipeline_512_768.yaml
 This evaluates:
 
 ```text
-outputs/merit_net_s_512_stage1_recall_pvtv2b2/
-outputs/merit_net_s_512_stage2_recall_calib_pvtv2b2/
-outputs/merit_net_s_768_stage3_recall_calib_pvtv2b2/
+outputs/merit_net_s_512_stage1_recall_pvtv2b2_lora/
+outputs/merit_net_s_512_stage2_recall_calib_pvtv2b2_lora/
+outputs/merit_net_s_768_stage3_recall_calib_pvtv2b2_lora/
 ```
 
 Per-stage results are kept under a timestamped directory:
 
 ```text
-outputs/test_results/staged_YYYYMMDD_HHMMSS/stage1_recall_pvtv2b2/
-outputs/test_results/staged_YYYYMMDD_HHMMSS/stage2_recall_calib_pvtv2b2/
-outputs/test_results/staged_YYYYMMDD_HHMMSS/stage3_recall_calib_pvtv2b2/
+outputs/test_results/staged_YYYYMMDD_HHMMSS/stage1_recall_pvtv2b2_lora/
+outputs/test_results/staged_YYYYMMDD_HHMMSS/stage2_recall_calib_pvtv2b2_lora/
+outputs/test_results/staged_YYYYMMDD_HHMMSS/stage3_recall_calib_pvtv2b2_lora/
 ```
 
 The combined summary is saved as:

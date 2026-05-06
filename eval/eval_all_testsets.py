@@ -96,6 +96,8 @@ def _stage_name_from_config(config_path: Path, config: dict[str, Any]) -> str:
             parts.append("pvtv2b1")
         elif "pvt" in lower_name or "pvt" in backbone:
             parts.append("pvt")
+        if "lora" in lower_name or bool(config.get("model", {}).get("use_lora", False)):
+            parts.append("lora")
         return "_".join(parts)
     return config_path.stem
 

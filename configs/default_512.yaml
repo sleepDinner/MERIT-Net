@@ -1,5 +1,5 @@
 seed: 42
-output_dir: outputs/merit_net_s_512_pvtv2b2
+output_dir: outputs/merit_net_s_512_pvtv2b2_lora
 
 data:
   train_root: /data0/lzb-change-vmunet/FinalTrainData/
@@ -60,6 +60,17 @@ model:
   use_edge_loss: true
   num_families: 5
   gradient_checkpointing: true
+  use_lora: true
+  lora_rank: 8
+  lora_alpha: 16
+  lora_dropout: 0.05
+  lora_freeze_base: true
+  lora_target_modules:
+    - attn.q
+    - attn.kv
+    - attn.proj
+    - mlp.fc1
+    - mlp.fc2
 
 train:
   epochs: 100
@@ -78,7 +89,7 @@ train:
   min_lr: 0.000001
   weight_decay: 0.0001
   param_lr_multipliers:
-    global_encoder: 0.35
+    global_encoder: 1.0
   warmup_epochs: 3
   scheduler: cosine
   early_stopping:

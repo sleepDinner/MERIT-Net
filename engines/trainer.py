@@ -344,13 +344,19 @@ def _apply_freeze_config(model: torch.nn.Module, train_cfg: Dict, logger=None) -
     if not freeze_modules:
         return
 
+    keep_lora_trainable = bool(train_cfg.get("freeze_keep_lora", True))
     total_params = 0
     frozen_params = 0
     frozen_tensors = 0
+    kept_lora_params = 0
     for name, param in model.named_parameters():
         total_params += param.numel()
         should_freeze = any(name == prefix or name.startswith(prefix + ".") for prefix in freeze_modules)
         if should_freeze:
+            if keep_lora_trainable and ".lora_" in name:
+                param.requires_grad_(True)
+                kept_lora_params += param.numel()
+                continue
             param.requires_grad_(False)
             frozen_params += param.numel()
             frozen_tensors += 1
@@ -360,6 +366,7 @@ def _apply_freeze_config(model: torch.nn.Module, train_cfg: Dict, logger=None) -
     message = (
         f"Freeze config applied: freeze_modules={freeze_modules} "
         f"frozen_tensors={frozen_tensors} frozen_params={frozen_params} "
+        f"kept_lora_params={kept_lora_params} "
         f"trainable_params={trainable_params} total_params={total_params}"
     )
     if logger is not None:

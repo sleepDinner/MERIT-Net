@@ -66,6 +66,17 @@ class MERITNet(nn.Module):
                 pretrained=bool(cfg.get("global_pretrained", True)),
                 gradient_checkpointing=self.gradient_checkpointing,
                 allow_fallback=bool(cfg.get("allow_global_fallback", False)),
+                lora_config={
+                    "enabled": bool(cfg.get("use_lora", False)),
+                    "rank": int(cfg.get("lora_rank", 8)),
+                    "alpha": float(cfg.get("lora_alpha", 16.0)),
+                    "dropout": float(cfg.get("lora_dropout", 0.05)),
+                    "freeze_base": bool(cfg.get("lora_freeze_base", True)),
+                    "target_modules": cfg.get(
+                        "lora_target_modules",
+                        ["attn.q", "attn.kv", "attn.proj", "mlp.fc1", "mlp.fc2"],
+                    ),
+                },
             )
             global_channels = self.global_encoder.channels
         else:
