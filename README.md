@@ -185,11 +185,47 @@ Warmup keeps degradations very light so the model first learns tamper regions an
 
 ## Evaluate All Test Sets
 
+Default staged evaluation reads `best_checkpoint.txt` from the three staged output directories and evaluates all of them:
+
+```bash
+python eval/eval_all_testsets.py --pipeline configs/pipeline_512_768.yaml
+```
+
+This evaluates:
+
+```text
+outputs/merit_net_s_512_stage1_pvt/checkpoints/best_checkpoint.txt
+outputs/merit_net_s_512_stage2_pvt/checkpoints/best_checkpoint.txt
+outputs/merit_net_s_768_stage3_pvt/checkpoints/best_checkpoint.txt
+```
+
+Per-stage results are kept under a timestamped directory:
+
+```text
+outputs/test_results/staged_YYYYMMDD_HHMMSS/stage1_pvt/
+outputs/test_results/staged_YYYYMMDD_HHMMSS/stage2_pvt/
+outputs/test_results/staged_YYYYMMDD_HHMMSS/stage3_pvt/
+```
+
+The combined summary is saved as:
+
+```text
+outputs/test_results_summary_all_stages_YYYYMMDD_HHMMSS.csv
+outputs/test_results_summary_all_stages_latest.csv
+outputs/test_results_summary_latest.csv
+```
+
+To evaluate one explicit checkpoint, keep using `--config` and `--ckpt`:
+
 ```bash
 python eval/eval_all_testsets.py --config configs/default_512.yaml --ckpt outputs/merit_net_s_512/checkpoints/epochXX.pth
 ```
 
-Evaluation defaults to `--batch_size 64`. Lower it if test-time memory is insufficient.
+Evaluation uses each config's `eval.batch_size_per_gpu` by default. You can override it for all stages:
+
+```bash
+python eval/eval_all_testsets.py --pipeline configs/pipeline_512_768.yaml --batch_size 16 --num_workers 8
+```
 
 The script evaluates:
 
@@ -197,7 +233,7 @@ The script evaluates:
 Casiav1, Columbia, NIST16, IMD2020, DSO-1, Korus
 ```
 
-Outputs include `outputs/test_skipped_samples.csv`, per-dataset metric CSV files under `outputs/test_results/`, and `outputs/test_results_summary.csv`.
+Outputs include `outputs/test_skipped_samples.csv`, per-dataset metric CSV files under `outputs/test_results/`, and timestamped summary CSV files under `outputs/`.
 
 ## Visualize
 
