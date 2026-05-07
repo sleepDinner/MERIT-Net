@@ -10,6 +10,8 @@ data:
   split_strategy: source_aware
   force_resplit: false
   source_group_depth: 2
+  source_group_mode: filename_dataset
+  source_group_bucket_size: 500
   min_val_groups: 2
   split_audit: true
   strict_pair_audit: true

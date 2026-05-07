@@ -7,6 +7,7 @@ import random
 import re
 import time
 import warnings
+from collections import Counter
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Callable, Dict, Iterable, List, Optional, Tuple
@@ -72,6 +73,7 @@ SOURCE_GROUP_IGNORE_DIRS = {
     "seg",
     "binary",
 }
+CASIA_SOURCE_CATEGORIES = {"ani", "arc", "art", "cha", "ind", "nat", "pla", "sec", "txt", "xxx"}
 
 
 @dataclass
@@ -214,13 +216,55 @@ def _pair_hash(image_path: str | Path, mask_path: str | Path) -> str:
     return hashlib.sha1(text.encode("utf-8")).hexdigest()[:16]
 
 
+def _source_bucket(value: int, bucket_size: int) -> int:
+    return max(0, int(value)) // max(1, int(bucket_size))
+
+
+def _filename_source_group(image_path: str | Path, bucket_size: int = 100) -> str | None:
+    stem = Path(image_path).stem.lower()
+
+    if stem.startswith("fan_"):
+        ids = [int(x) for x in re.findall(r"img[_-]?(\d+)", stem)]
+        if ids:
+            bucket = _source_bucket(min(ids), bucket_size)
+            return f"fantasticreality/img_bucket_{bucket:04d}"
+        return "fantasticreality/unknown"
+
+    if stem.startswith("au_") or stem.startswith("tp_"):
+        authentic = re.match(r"au[_-]([a-z]{3})[_-]?(\d+)", stem)
+        if authentic and authentic.group(1) in CASIA_SOURCE_CATEGORIES:
+            bucket = _source_bucket(int(authentic.group(2)), bucket_size)
+            return f"casiav2/{authentic.group(1)}_bucket_{bucket:04d}"
+
+        refs = re.findall(r"(ani|arc|art|cha|ind|nat|pla|sec|txt|xxx)(\d{3,6})", stem)
+        if refs:
+            category, number = refs[0]
+            bucket = _source_bucket(int(number), bucket_size)
+            return f"casiav2/{category}_bucket_{bucket:04d}"
+
+        manipulation = re.match(r"tp[_-]([a-z])", stem)
+        if manipulation:
+            return f"casiav2/tp_{manipulation.group(1)}"
+        return "casiav2/unknown"
+
+    return None
+
+
 def infer_source_group(
     image_path: str | Path,
     root: str | Path | None = None,
     depth: int = 2,
     ignore_dirs: Iterable[str] | None = None,
+    mode: str = "path",
+    bucket_size: int = 100,
 ) -> str:
     image_path = Path(image_path)
+    mode = str(mode or "path").lower()
+    if mode in {"auto", "filename", "filename_dataset", "dataset_filename"}:
+        filename_group = _filename_source_group(image_path, bucket_size=bucket_size)
+        if filename_group:
+            return filename_group
+
     ignore = {x.lower() for x in (ignore_dirs or SOURCE_GROUP_IGNORE_DIRS)}
     try:
         rel = image_path.relative_to(Path(root)) if root is not None else image_path
@@ -304,6 +348,8 @@ def scan_dataset(
     mask_threshold: float = 127.0,
     source_group_depth: int = 2,
     source_group_ignore_dirs: Iterable[str] | None = None,
+    source_group_mode: str = "path",
+    source_group_bucket_size: int = 100,
 ) -> Tuple[List[SampleRecord], List[SkippedRecord]]:
     root = Path(root)
     output_dir = ensure_dir(output_dir)
@@ -379,6 +425,8 @@ def scan_dataset(
                 root=root,
                 depth=source_group_depth,
                 ignore_dirs=source_group_ignore_dirs,
+                mode=source_group_mode,
+                bucket_size=source_group_bucket_size,
             )
             valid.append(
                 SampleRecord(
@@ -461,10 +509,29 @@ def _sample_source_group(
     train_root: str | Path | None,
     depth: int,
     ignore_dirs: Iterable[str] | None,
+    mode: str = "path",
+    bucket_size: int = 100,
 ) -> str:
+    mode = str(mode or "path").lower()
+    if mode in {"auto", "filename", "filename_dataset", "dataset_filename"}:
+        return infer_source_group(
+            sample.image_path,
+            root=train_root,
+            depth=depth,
+            ignore_dirs=ignore_dirs,
+            mode=mode,
+            bucket_size=bucket_size,
+        )
     if sample.source_group:
         return sample.source_group
-    return infer_source_group(sample.image_path, root=train_root, depth=depth, ignore_dirs=ignore_dirs)
+    return infer_source_group(
+        sample.image_path,
+        root=train_root,
+        depth=depth,
+        ignore_dirs=ignore_dirs,
+        mode=mode,
+        bucket_size=bucket_size,
+    )
 
 
 def _source_group_table(
@@ -473,12 +540,14 @@ def _source_group_table(
     train_root: str | Path | None,
     depth: int,
     ignore_dirs: Iterable[str] | None,
+    mode: str = "path",
+    bucket_size: int = 100,
 ) -> List[dict]:
     rows = []
     for split_name, rows_samples in (("train", train), ("val", val)):
         groups: Dict[str, List[SampleRecord]] = {}
         for sample in rows_samples:
-            groups.setdefault(_sample_source_group(sample, train_root, depth, ignore_dirs), []).append(sample)
+            groups.setdefault(_sample_source_group(sample, train_root, depth, ignore_dirs, mode, bucket_size), []).append(sample)
         for group, group_samples in sorted(groups.items()):
             counts = _count_labels(group_samples)
             rows.append({"split": split_name, "source_group": group, **counts})
@@ -492,13 +561,22 @@ def _source_aware_split(
     train_root: str | Path | None,
     source_group_depth: int,
     source_group_ignore_dirs: Iterable[str] | None,
+    source_group_mode: str = "path",
+    source_group_bucket_size: int = 100,
     min_val_groups: int = 2,
     log_fn: Optional[Callable[[str], None]] = None,
 ) -> Tuple[List[SampleRecord], List[SampleRecord]]:
     rng = random.Random(seed)
     groups: Dict[str, List[SampleRecord]] = {}
     for sample in samples:
-        group = _sample_source_group(sample, train_root, source_group_depth, source_group_ignore_dirs)
+        group = _sample_source_group(
+            sample,
+            train_root,
+            source_group_depth,
+            source_group_ignore_dirs,
+            source_group_mode,
+            source_group_bucket_size,
+        )
         sample.source_group = group
         if not sample.pair_hash:
             sample.pair_hash = _pair_hash(sample.image_path, sample.mask_path)
@@ -525,43 +603,80 @@ def _source_aware_split(
         candidates.append({"group": group, "samples": group_samples, **counts})
     rng.shuffle(candidates)
 
-    val_groups: set[str] = set()
-    val_total = 0
-    val_pos = 0
-    val_neg = 0
+    def choose_val_groups(
+        group_candidates: List[dict],
+        group_target_total: int,
+        group_target_pos: int,
+        group_target_neg: int,
+        group_min_val_groups: int,
+    ) -> set[str]:
+        remaining = list(group_candidates)
+        rng.shuffle(remaining)
+        selected: set[str] = set()
+        val_total = 0
+        val_pos = 0
+        val_neg = 0
 
-    def split_score(total: int, pos: int, neg: int) -> float:
-        score = abs(total - target_total) / max(1, target_total)
-        if target_pos:
-            score += abs(pos - target_pos) / max(1, target_pos)
-        if target_neg:
-            score += abs(neg - target_neg) / max(1, target_neg)
-        if total > target_total:
-            score += 0.5 * (total - target_total) / max(1, target_total)
-        return score
+        def split_score(total: int, pos: int, neg: int) -> float:
+            score = abs(total - group_target_total) / max(1, group_target_total)
+            if group_target_pos:
+                score += abs(pos - group_target_pos) / max(1, group_target_pos)
+            if group_target_neg:
+                score += abs(neg - group_target_neg) / max(1, group_target_neg)
+            if total > group_target_total:
+                score += 0.5 * (total - group_target_total) / max(1, group_target_total)
+            return score
 
-    effective_min_val_groups = min(max(1, int(min_val_groups)), max(1, len(groups) - 1))
-    max_val_groups = max(1, len(groups) - 1)
-    while candidates and len(val_groups) < max_val_groups and (val_total < target_total or len(val_groups) < effective_min_val_groups):
-        current_score = split_score(val_total, val_pos, val_neg)
-        best_idx = 0
-        best_score = float("inf")
-        for idx, candidate in enumerate(candidates):
-            new_score = split_score(
-                val_total + int(candidate["total"]),
-                val_pos + int(candidate["positive"]),
-                val_neg + int(candidate["negative"]),
+        effective_min_groups = min(max(1, int(group_min_val_groups)), max(1, len(remaining) - 1))
+        max_groups = max(1, len(remaining) - 1)
+        while remaining and len(selected) < max_groups and (val_total < group_target_total or len(selected) < effective_min_groups):
+            current_score = split_score(val_total, val_pos, val_neg)
+            best_idx = 0
+            best_score = float("inf")
+            for idx, candidate in enumerate(remaining):
+                new_score = split_score(
+                    val_total + int(candidate["total"]),
+                    val_pos + int(candidate["positive"]),
+                    val_neg + int(candidate["negative"]),
+                )
+                if new_score < best_score:
+                    best_score = new_score
+                    best_idx = idx
+            candidate = remaining.pop(best_idx)
+            if selected and val_total >= group_target_total and best_score > current_score:
+                break
+            selected.add(str(candidate["group"]))
+            val_total += int(candidate["total"])
+            val_pos += int(candidate["positive"])
+            val_neg += int(candidate["negative"])
+        return selected
+
+    candidates_by_source: Dict[str, List[dict]] = {}
+    for candidate in candidates:
+        source = str(candidate["group"]).split("/", 1)[0]
+        candidates_by_source.setdefault(source, []).append(candidate)
+
+    if len(candidates_by_source) > 1:
+        val_groups: set[str] = set()
+        for source_candidates in candidates_by_source.values():
+            if len(source_candidates) < 2:
+                continue
+            source_total = sum(int(c["total"]) for c in source_candidates)
+            source_pos = sum(int(c["positive"]) for c in source_candidates)
+            source_neg = sum(int(c["negative"]) for c in source_candidates)
+            val_groups.update(
+                choose_val_groups(
+                    source_candidates,
+                    max(1, int(round(source_total * val_ratio))),
+                    max(1, int(round(source_pos * val_ratio))) if source_pos else 0,
+                    max(1, int(round(source_neg * val_ratio))) if source_neg else 0,
+                    1,
+                )
             )
-            if new_score < best_score:
-                best_score = new_score
-                best_idx = idx
-        candidate = candidates.pop(best_idx)
-        if val_groups and val_total >= target_total and best_score > current_score:
-            break
-        val_groups.add(str(candidate["group"]))
-        val_total += int(candidate["total"])
-        val_pos += int(candidate["positive"])
-        val_neg += int(candidate["negative"])
+        if not val_groups:
+            val_groups = choose_val_groups(candidates, target_total, target_pos, target_neg, min_val_groups)
+    else:
+        val_groups = choose_val_groups(candidates, target_total, target_pos, target_neg, min_val_groups)
 
     train = []
     val = []
@@ -587,6 +702,8 @@ def _audit_split_samples(
     train_root: str | Path | None,
     source_group_depth: int,
     source_group_ignore_dirs: Iterable[str] | None,
+    source_group_mode: str,
+    source_group_bucket_size: int,
     mask_threshold: float,
     strict: bool,
     require_source_disjoint: bool,
@@ -606,7 +723,14 @@ def _audit_split_samples(
             "split": split_name,
             "image_path": sample.image_path,
             "mask_path": sample.mask_path,
-            "source_group": _sample_source_group(sample, train_root, source_group_depth, source_group_ignore_dirs),
+            "source_group": _sample_source_group(
+                sample,
+                train_root,
+                source_group_depth,
+                source_group_ignore_dirs,
+                source_group_mode,
+                source_group_bucket_size,
+            ),
             "expected_label": sample.label,
             "actual_label": actual_label,
             "status": "error",
@@ -617,7 +741,14 @@ def _audit_split_samples(
 
     for split_name, rows_samples in (("train", train), ("val", val)):
         for sample in rows_samples:
-            group = _sample_source_group(sample, train_root, source_group_depth, source_group_ignore_dirs)
+            group = _sample_source_group(
+                sample,
+                train_root,
+                source_group_depth,
+                source_group_ignore_dirs,
+                source_group_mode,
+                source_group_bucket_size,
+            )
             source_sets[split_name].add(group)
             image_key = str(Path(sample.image_path))
             mask_key = str(Path(sample.mask_path))
@@ -687,7 +818,15 @@ def _audit_split_samples(
         if require_source_disjoint:
             mismatch_rows.append(row)
 
-    source_rows = _source_group_table(train, val, train_root, source_group_depth, source_group_ignore_dirs)
+    source_rows = _source_group_table(
+        train,
+        val,
+        train_root,
+        source_group_depth,
+        source_group_ignore_dirs,
+        source_group_mode,
+        source_group_bucket_size,
+    )
     _write_csv(
         split_dir / "split_audit.csv",
         audit_rows,
@@ -706,6 +845,16 @@ def _audit_split_samples(
             "val": _count_labels(val),
             "train_source_groups": len(source_sets["train"]),
             "val_source_groups": len(source_sets["val"]),
+            "train_source_datasets": dict(
+                sorted(
+                    Counter(group.split("/", 1)[0] for group in source_sets["train"]).items()
+                )
+            ),
+            "val_source_datasets": dict(
+                sorted(
+                    Counter(group.split("/", 1)[0] for group in source_sets["val"]).items()
+                )
+            ),
             "source_group_overlap_count": len(source_overlap),
             "audit_total_rows": len(audit_rows),
             "audit_error_rows": len(mismatch_rows),
@@ -744,6 +893,8 @@ def split_train_val(
     train_root: str | Path | None = None,
     source_group_depth: int = 2,
     source_group_ignore_dirs: Iterable[str] | None = None,
+    source_group_mode: str = "path",
+    source_group_bucket_size: int = 100,
     min_val_groups: int = 2,
     split_audit: bool = True,
     strict_pair_audit: bool = True,
@@ -754,7 +905,14 @@ def split_train_val(
     split_strategy = str(split_strategy or "random").lower()
     source_group_count = len(
         {
-            _sample_source_group(sample, train_root, source_group_depth, source_group_ignore_dirs)
+            _sample_source_group(
+                sample,
+                train_root,
+                source_group_depth,
+                source_group_ignore_dirs,
+                source_group_mode,
+                source_group_bucket_size,
+            )
             for sample in samples
         }
     )
@@ -767,6 +925,8 @@ def split_train_val(
             train_root=train_root,
             source_group_depth=source_group_depth,
             source_group_ignore_dirs=source_group_ignore_dirs,
+            source_group_mode=source_group_mode,
+            source_group_bucket_size=source_group_bucket_size,
             min_val_groups=min_val_groups,
             log_fn=log_fn,
         )
@@ -795,6 +955,8 @@ def split_train_val(
         "seed": int(seed),
         "balance_pos_neg": bool(balance_pos_neg),
         "source_group_depth": int(source_group_depth),
+        "source_group_mode": str(source_group_mode),
+        "source_group_bucket_size": int(source_group_bucket_size),
         "min_val_groups": int(min_val_groups),
         "source_group_count": int(source_group_count),
         "source_disjoint_required": bool(require_source_disjoint),
@@ -809,6 +971,8 @@ def split_train_val(
             train_root=train_root,
             source_group_depth=source_group_depth,
             source_group_ignore_dirs=source_group_ignore_dirs,
+            source_group_mode=source_group_mode,
+            source_group_bucket_size=source_group_bucket_size,
             mask_threshold=mask_threshold,
             strict=strict_pair_audit,
             require_source_disjoint=require_source_disjoint,
@@ -827,6 +991,8 @@ def scan_and_split_from_config(config: dict, log_fn: Optional[Callable[[str], No
     train_root = data_cfg.get("train_root", "/data0/lzb-change-vmunet/FinalTrainData/")
     source_group_depth = int(data_cfg.get("source_group_depth", 2))
     source_group_ignore_dirs = data_cfg.get("source_group_ignore_dirs", list(SOURCE_GROUP_IGNORE_DIRS))
+    source_group_mode = str(data_cfg.get("source_group_mode", "path"))
+    source_group_bucket_size = int(data_cfg.get("source_group_bucket_size", 100))
     mask_threshold = float(data_cfg.get("mask_threshold", 127.0))
     samples, _ = scan_dataset(
         root=train_root,
@@ -836,6 +1002,8 @@ def scan_and_split_from_config(config: dict, log_fn: Optional[Callable[[str], No
         mask_threshold=mask_threshold,
         source_group_depth=source_group_depth,
         source_group_ignore_dirs=source_group_ignore_dirs,
+        source_group_mode=source_group_mode,
+        source_group_bucket_size=source_group_bucket_size,
     )
     train_file, val_file = split_train_val(
         samples,
@@ -847,6 +1015,8 @@ def scan_and_split_from_config(config: dict, log_fn: Optional[Callable[[str], No
         train_root=train_root,
         source_group_depth=source_group_depth,
         source_group_ignore_dirs=source_group_ignore_dirs,
+        source_group_mode=source_group_mode,
+        source_group_bucket_size=source_group_bucket_size,
         min_val_groups=int(data_cfg.get("min_val_groups", 2)),
         split_audit=bool(data_cfg.get("split_audit", True)),
         strict_pair_audit=bool(data_cfg.get("strict_pair_audit", True)),
@@ -883,6 +1053,12 @@ def should_resplit_from_config(config: dict, train_file: str | Path, val_file: s
         expected_depth = int(data_cfg.get("source_group_depth", 2))
         if int(summary.get("source_group_depth", -1)) != expected_depth:
             return True, "source_group_depth_changed"
+        expected_mode = str(data_cfg.get("source_group_mode", "path"))
+        if str(summary.get("source_group_mode", "path")) != expected_mode:
+            return True, "source_group_mode_changed"
+        expected_bucket_size = int(data_cfg.get("source_group_bucket_size", 100))
+        if int(summary.get("source_group_bucket_size", -1)) != expected_bucket_size:
+            return True, "source_group_bucket_size_changed"
         if int(summary.get("audit_error_rows", 0)) > 0 and bool(data_cfg.get("strict_pair_audit", True)):
             return True, "previous_split_audit_failed"
     return False, "existing_splits_ok"

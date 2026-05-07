@@ -10,6 +10,8 @@ data:
   split_strategy: source_aware
   force_resplit: false
   source_group_depth: 2
+  source_group_mode: filename_dataset
+  source_group_bucket_size: 500
   min_val_groups: 2
   split_audit: true
   strict_pair_audit: true
@@ -36,8 +38,8 @@ data:
   mask_threshold: 127
   train_crop_mode: mixed
   crop_size: 512
-  tamper_crop_prob: 0.7
-  crop_prob: 0.5
+  tamper_crop_prob: 0.8
+  crop_prob: 0.55
 
 model:
   name: MERITNet
@@ -191,17 +193,17 @@ augmentation_schedule:
     copy_move_prob: 0.06
     inpainting_prob: 0.06
   robust:
-    degradation_prob: 0.35
+    degradation_prob: 0.40
     max_degradations: 2
-    jpeg_prob: 0.28
-    jpeg_quality: [50, 95]
+    jpeg_prob: 0.32
+    jpeg_quality: [45, 95]
     blur_prob: 0.12
-    blur_radius: [0.2, 1.3]
+    blur_radius: [0.2, 1.5]
     noise_prob: 0.12
     noise_sigma: [0, 8]
-    downscale_prob: 0.12
-    downscale_scale: [0.70, 0.95]
-    color_jitter_prob: 0.18
+    downscale_prob: 0.15
+    downscale_scale: [0.65, 0.97]
+    color_jitter_prob: 0.20
     color_jitter_strength: 0.12
     scale_prob: 0.12
     scale_range: [0.90, 1.10]

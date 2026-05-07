@@ -10,6 +10,8 @@ data:
   split_strategy: source_aware
   force_resplit: false
   source_group_depth: 2
+  source_group_mode: filename_dataset
+  source_group_bucket_size: 500
   min_val_groups: 2
   split_audit: true
   strict_pair_audit: true
@@ -36,8 +38,8 @@ data:
   mask_threshold: 127
   train_crop_mode: mixed
   crop_size: 768
-  tamper_crop_prob: 0.7
-  crop_prob: 0.25
+  tamper_crop_prob: 0.8
+  crop_prob: 0.2
 
 model:
   name: MERITNet
@@ -77,7 +79,7 @@ model:
     - mlp.fc2
 
 train:
-  epochs: 12
+  epochs: 18
   batch_size_per_gpu: 8
   accumulate_grad_batches: 2
   freeze_modules:
@@ -103,16 +105,16 @@ train:
   early_stopping:
     monitor: val_best_score
     mode: max
-    patience: 5
-    min_epochs: 5
+    patience: 7
+    min_epochs: 7
     min_delta: 0.001
     loss_key: val_loss_final_seg
-    loss_patience: 4
+    loss_patience: 5
     loss_relative_tolerance: 0.20
-    score_drop_patience: 4
+    score_drop_patience: 5
     score_drop_tolerance: 0.035
     auc_key: val_pixel_auc
-    auc_drop_patience: 4
+    auc_drop_patience: 5
     auc_drop_tolerance: 0.06
 
 checkpoint:
@@ -127,14 +129,14 @@ loss:
   coarse_seg: 0.4
   aux_seg: 0.15
   seg_bce: 1.0
-  seg_bce_pos_weight: 1.15
+  seg_bce_pos_weight: 1.25
   seg_dice: 1.0
-  seg_focal: 0.32
-  seg_tversky: 0.45
-  focal_alpha: 0.78
+  seg_focal: 0.35
+  seg_tversky: 0.50
+  focal_alpha: 0.80
   focal_gamma: 2.0
-  tversky_alpha: 0.24
-  tversky_beta: 0.76
+  tversky_alpha: 0.22
+  tversky_beta: 0.78
   edge: 0.2
   confidence: 0.04
   confidence_warmup_epochs: 2
@@ -198,17 +200,17 @@ augmentation_schedule:
     copy_move_prob: 0.06
     inpainting_prob: 0.06
   robust:
-    degradation_prob: 0.24
+    degradation_prob: 0.30
     max_degradations: 1
-    jpeg_prob: 0.22
-    jpeg_quality: [60, 95]
-    blur_prob: 0.08
+    jpeg_prob: 0.28
+    jpeg_quality: [50, 95]
+    blur_prob: 0.10
     blur_radius: [0.2, 1.2]
-    noise_prob: 0.08
-    noise_sigma: [0, 5]
-    downscale_prob: 0.08
-    downscale_scale: [0.80, 0.97]
-    color_jitter_prob: 0.16
+    noise_prob: 0.10
+    noise_sigma: [0, 6]
+    downscale_prob: 0.12
+    downscale_scale: [0.75, 0.97]
+    color_jitter_prob: 0.18
     color_jitter_strength: 0.10
     scale_prob: 0.12
     scale_range: [0.90, 1.10]
